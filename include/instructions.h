@@ -106,8 +106,10 @@ void instr_tst_reg_reg(uint16_t instr);            // TST Rn, Rm [EXISTING]
 void instr_teq_reg(uint16_t instr);                // TEQ Rn, Rm (test equivalence)
 
 // Special Register Access (32-bit instructions)
-void instr_msr(uint32_t instr);                    // MSR spec_reg, Rn
-void instr_mrs(uint32_t instr);                    // MRS Rd, spec_reg
+void instr_msr(uint32_t instr);                    // MSR spec_reg, Rn (legacy stub)
+void instr_mrs(uint32_t instr);                    // MRS Rd, spec_reg (legacy stub)
+void instr_msr_32(uint8_t rn, uint8_t sysm);      // MSR with decoded fields
+void instr_mrs_32(uint8_t rd, uint8_t sysm);       // MRS with decoded fields
 
 // System Operations
 void instr_svc(uint16_t instr);                    // SVC #imm8 (supervisor call)

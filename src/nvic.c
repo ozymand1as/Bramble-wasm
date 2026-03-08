@@ -6,6 +6,9 @@
 /* Global NVIC state */
 nvic_state_t nvic_state = {0};
 
+/* SysTick state */
+systick_state_t systick_state = {0};
+
 /* Track last IRQ signal for duplicate detection */
 static uint32_t last_irq_signal = 0xFFFFFFFF;
 static uint32_t irq_signal_count = 0;
@@ -18,17 +21,75 @@ void nvic_init(void) {
 /* Reset NVIC to power-on defaults */
 void nvic_reset(void) {
     memset(&nvic_state, 0, sizeof(nvic_state_t));
-    nvic_state.enable = 0x0;              /* All IRQs disabled */
-    nvic_state.pending = 0x0;             /* No pending interrupts */
-    nvic_state.active_exceptions = 0x0;   /* No active exceptions */
-    
-    /* Initialize priority registers */
+    nvic_state.enable = 0x0;
+    nvic_state.pending = 0x0;
+    nvic_state.active_exceptions = 0x0;
+    nvic_state.shpr2 = 0;
+    nvic_state.shpr3 = 0;
+    nvic_state.pendsv_pending = 0;
+
     for (int i = 0; i < NUM_EXTERNAL_IRQS; i++) {
         nvic_state.priority[i] = 0;
     }
-    
+
     last_irq_signal = 0xFFFFFFFF;
     irq_signal_count = 0;
+}
+
+/* Initialize SysTick */
+void systick_init(void) {
+    systick_reset();
+}
+
+/* Reset SysTick to power-on defaults */
+void systick_reset(void) {
+    memset(&systick_state, 0, sizeof(systick_state_t));
+}
+
+/* Tick SysTick timer - called once per CPU step */
+void systick_tick(uint32_t cycles) {
+    if (!(systick_state.csr & 1)) return; /* Not enabled */
+
+    for (uint32_t i = 0; i < cycles; i++) {
+        if (systick_state.cvr > 0) {
+            systick_state.cvr--;
+        }
+        if (systick_state.cvr == 0) {
+            /* Counter reached zero - set COUNTFLAG and reload */
+            systick_state.csr |= (1u << 16); /* COUNTFLAG */
+            systick_state.cvr = systick_state.rvr & 0x00FFFFFF;
+            /* If TICKINT (bit 1) is set, pend SysTick exception */
+            if (systick_state.csr & 2) {
+                systick_state.pending = 1;
+            }
+        }
+    }
+}
+
+/**
+ * Get effective priority of an exception vector number.
+ * Returns priority in bits [7:6] format (0x00=highest, 0xC0=lowest).
+ * Fixed-priority exceptions return 0 (they cannot be preempted by
+ * configurable-priority exceptions anyway).
+ */
+uint8_t nvic_get_exception_priority(uint32_t vector_num) {
+    switch (vector_num) {
+        case EXC_RESET:
+        case EXC_NMI:
+        case EXC_HARDFAULT:
+            return 0; /* Fixed highest priority */
+        case EXC_SVCALL:
+            return (nvic_state.shpr2 >> 24) & 0xC0;
+        case EXC_PENDSV:
+            return (nvic_state.shpr3 >> 16) & 0xC0;
+        case EXC_SYSTICK:
+            return (nvic_state.shpr3 >> 24) & 0xC0;
+        default:
+            if (vector_num >= 16 && (vector_num - 16) < NUM_EXTERNAL_IRQS) {
+                return nvic_state.priority[vector_num - 16] & 0xC0;
+            }
+            return 0xFF;
+    }
 }
 
 /* Enable an IRQ (set in ISER) */
@@ -51,7 +112,7 @@ void nvic_disable_irq(uint32_t irq) {
 void nvic_set_pending(uint32_t irq) {
     if (irq < NUM_EXTERNAL_IRQS) {
         nvic_state.pending |= (1 << irq);
-        printf("[NVIC] Set pending for IRQ %u (pending mask=0x%X, enable mask=0x%X)\n", 
+        printf("[NVIC] Set pending for IRQ %u (pending mask=0x%X, enable mask=0x%X)\n",
                irq, nvic_state.pending, nvic_state.enable);
     }
 }
@@ -67,76 +128,75 @@ void nvic_clear_pending(uint32_t irq) {
 /* Set priority for an IRQ */
 void nvic_set_priority(uint32_t irq, uint8_t priority) {
     if (irq < NUM_EXTERNAL_IRQS) {
-        /* Cortex-M0+ uses only bits [7:6] of priority register */
-        /* Allowed values: 0, 64 (0x40), 128 (0x80), 192 (0xC0) */
         nvic_state.priority[irq] = priority & 0xC0;
     }
 }
 
 /**
  * Get the highest priority pending IRQ.
- * 
- * Returns the IRQ (0-25) with:
- *   - Pending bit set (nvic_state.pending)
- *   - Enable bit set (nvic_state.enable)  
- *   - LOWEST numeric priority value (bits [7:6] of priority register)
- * 
- * In ARM Cortex-M0+: LOWER numeric priority value = HIGHER importance
- * Priority levels: 0x00 (level 0, highest), 0x40 (level 1), 0x80 (level 2), 0xC0 (level 3, lowest)
- * 
- * Tiebreaker: If multiple IRQs have same priority, returns the one with lower IRQ number
- * 
- * Returns 0xFFFFFFFF if no pending IRQ
+ * Returns 0xFFFFFFFF if no pending IRQ.
  */
 uint32_t nvic_get_pending_irq(void) {
     uint32_t pending_and_enabled = nvic_state.pending & nvic_state.enable;
-    
+
     if (pending_and_enabled == 0) {
-        /* No pending interrupts */
         return 0xFFFFFFFF;
     }
-    
+
     uint32_t highest_priority_irq = 0xFFFFFFFF;
-    uint8_t highest_priority_value = 0xFF;  /* Start with worst possible priority */
-    
-    /* Scan all IRQs to find the one with lowest (best) numeric priority value */
+    uint8_t highest_priority_value = 0xFF;
+
     for (uint32_t irq = 0; irq < NUM_EXTERNAL_IRQS; irq++) {
         if ((pending_and_enabled & (1 << irq))) {
-            /* Extract priority (only bits [7:6] used in Cortex-M0+) */
             uint8_t prio = nvic_state.priority[irq] & 0xC0;
-            
-            /* Update if this IRQ has LOWER (better) numeric priority value */
+
             if (prio < highest_priority_value) {
                 highest_priority_value = prio;
                 highest_priority_irq = irq;
-            }
-            /* Tiebreaker: same priority -> prefer lower IRQ number */
-            else if (prio == highest_priority_value) {
+            } else if (prio == highest_priority_value) {
                 if (irq < highest_priority_irq) {
                     highest_priority_irq = irq;
                 }
             }
         }
     }
-    
+
     return highest_priority_irq;
 }
 
 /* Read NVIC register */
 uint32_t nvic_read_register(uint32_t addr) {
     switch (addr) {
+        /* SysTick registers */
+        case SYST_CSR:
+            {
+                uint32_t val = systick_state.csr;
+                /* COUNTFLAG (bit 16) is cleared on read */
+                systick_state.csr &= ~(1u << 16);
+                return val;
+            }
+        case SYST_RVR:
+            return systick_state.rvr & 0x00FFFFFF;
+        case SYST_CVR:
+            return systick_state.cvr & 0x00FFFFFF;
+        case SYST_CALIB:
+            /* NOREF=1 (bit 31: no external ref), SKEW=1 (bit 30),
+             * TENMS=0 (no calibration value) */
+            return 0xC0000000;
+
+        /* NVIC registers */
         case NVIC_ISER:
             return nvic_state.enable;
-            
+
         case NVIC_ICER:
-            return nvic_state.enable;  /* ICER reads back what's enabled */
-            
+            return nvic_state.enable;
+
         case NVIC_ISPR:
             return nvic_state.pending;
-            
+
         case NVIC_ICPR:
-            return nvic_state.pending;  /* ICPR reads back what's pending */
-            
+            return nvic_state.pending;
+
         case NVIC_IPR:
         case NVIC_IPR + 4:
         case NVIC_IPR + 8:
@@ -144,7 +204,6 @@ uint32_t nvic_read_register(uint32_t addr) {
         case NVIC_IPR + 16:
         case NVIC_IPR + 20:
         case NVIC_IPR + 24:
-            /* Priority registers - 8 bytes for 32 IRQs (4 bytes per register) */
             {
                 uint32_t offset = (addr - NVIC_IPR) / 4;
                 if (offset < 7) {
@@ -159,20 +218,42 @@ uint32_t nvic_read_register(uint32_t addr) {
                 }
             }
             return 0;
-            
+
+        /* SCB registers */
         case SCB_ICSR:
-            /* Interrupt Control and State Register */
             {
                 uint32_t pending_irq = nvic_get_pending_irq();
-                uint32_t vect_pending = (pending_irq != 0xFFFFFFFF) ? (pending_irq + 16) : 0;
-                uint32_t isrpending = (pending_irq != 0xFFFFFFFF) ? (1 << 22) : 0;
-                return vect_pending | isrpending;
+                uint32_t val = 0;
+                if (pending_irq != 0xFFFFFFFF) {
+                    val |= ((pending_irq + 16) << ICSR_VECTPENDING_SHIFT);
+                    val |= ICSR_ISRPENDING;
+                }
+                if (systick_state.pending)
+                    val |= ICSR_PENDSTSET;
+                if (nvic_state.pendsv_pending)
+                    val |= ICSR_PENDSVSET;
+                return val;
             }
-            
+
         case SCB_VTOR:
-            /* Vector Table Offset Register */
             return cpu.vtor;
-            
+
+        case SCB_AIRCR:
+            return 0x05FA0000; /* VECTKEY + default PRIGROUP */
+
+        case SCB_SCR:
+            return 0;
+
+        case SCB_CCR:
+            /* STKALIGN=1 (bit 9) - 8-byte stack alignment on exception */
+            return (1u << 9);
+
+        case SCB_SHPR2:
+            return nvic_state.shpr2;
+
+        case SCB_SHPR3:
+            return nvic_state.shpr3;
+
         default:
             return 0;
     }
@@ -181,30 +262,45 @@ uint32_t nvic_read_register(uint32_t addr) {
 /* Write NVIC register */
 void nvic_write_register(uint32_t addr, uint32_t val) {
     switch (addr) {
+        /* SysTick registers */
+        case SYST_CSR:
+            /* Only bits [2:0] are writable: CLKSOURCE, TICKINT, ENABLE */
+            systick_state.csr = (systick_state.csr & ~0x7) | (val & 0x7);
+            if (cpu.debug_enabled) {
+                printf("[SYSTICK] CSR = 0x%08X (EN=%d TICKINT=%d)\n",
+                       systick_state.csr, (int)(val & 1), (int)((val >> 1) & 1));
+            }
+            break;
+        case SYST_RVR:
+            systick_state.rvr = val & 0x00FFFFFF;
+            break;
+        case SYST_CVR:
+            /* Writing any value clears CVR and COUNTFLAG */
+            systick_state.cvr = 0;
+            systick_state.csr &= ~(1u << 16);
+            break;
+
+        /* NVIC registers */
         case NVIC_ISER:
-            /* Interrupt Set Enable Register - write 1 to enable */
             nvic_state.enable |= val;
             printf("[NVIC] Write ISER: 0x%X, enabled mask now=0x%X\n", val, nvic_state.enable);
             break;
-            
+
         case NVIC_ICER:
-            /* Interrupt Clear Enable Register - write 1 to disable */
             nvic_state.enable &= ~val;
             printf("[NVIC] Write ICER: 0x%X, enabled mask now=0x%X\n", val, nvic_state.enable);
             break;
-            
+
         case NVIC_ISPR:
-            /* Interrupt Set Pending Register - write 1 to set pending */
             nvic_state.pending |= val;
             printf("[NVIC] Write ISPR: 0x%X, pending mask now=0x%X\n", val, nvic_state.pending);
             break;
-            
+
         case NVIC_ICPR:
-            /* Interrupt Clear Pending Register - write 1 to clear pending */
             nvic_state.pending &= ~val;
             printf("[NVIC] Write ICPR: 0x%X, pending mask now=0x%X\n", val, nvic_state.pending);
             break;
-            
+
         case NVIC_IPR:
         case NVIC_IPR + 4:
         case NVIC_IPR + 8:
@@ -212,7 +308,6 @@ void nvic_write_register(uint32_t addr, uint32_t val) {
         case NVIC_IPR + 16:
         case NVIC_IPR + 20:
         case NVIC_IPR + 24:
-            /* Priority registers */
             {
                 uint32_t offset = (addr - NVIC_IPR) / 4;
                 if (offset < 7) {
@@ -225,11 +320,41 @@ void nvic_write_register(uint32_t addr, uint32_t val) {
                 }
             }
             break;
-            
-        case SCB_VTOR:
-            /* Vector Table Offset Register - read-only in our implementation */
+
+        /* SCB registers */
+        case SCB_ICSR:
+            /* Write-1-to-clear for PENDSVCLR and PENDSTCLR */
+            if (val & ICSR_PENDSVCLR)
+                nvic_state.pendsv_pending = 0;
+            if (val & ICSR_PENDSTCLR)
+                systick_state.pending = 0;
+            /* Write-1-to-set for PENDSVSET and PENDSTSET */
+            if (val & ICSR_PENDSVSET)
+                nvic_state.pendsv_pending = 1;
+            if (val & ICSR_PENDSTSET)
+                systick_state.pending = 1;
             break;
-            
+
+        case SCB_VTOR:
+            cpu.vtor = val & 0xFFFFFF80; /* 128-byte aligned */
+            break;
+
+        case SCB_SHPR2:
+            /* Only bits [31:30] writable (SVCall priority) on M0+ */
+            nvic_state.shpr2 = val & 0xC0000000;
+            break;
+
+        case SCB_SHPR3:
+            /* Byte 3 (bits [31:24]) = SysTick priority, Byte 2 (bits [23:16]) = PendSV priority */
+            nvic_state.shpr3 = val & 0xC0C00000;
+            break;
+
+        case SCB_AIRCR:
+        case SCB_SCR:
+        case SCB_CCR:
+            /* Accept writes silently */
+            break;
+
         default:
             break;
     }
@@ -239,18 +364,15 @@ void nvic_write_register(uint32_t addr, uint32_t val) {
 void nvic_signal_irq(uint32_t irq) {
     if (irq < NUM_EXTERNAL_IRQS) {
         irq_signal_count++;
-        
-        printf("[NVIC] *** SIGNAL IRQ %u (count=%u, pending before=0x%X, enable=0x%X) ***\n", 
+
+        printf("[NVIC] *** SIGNAL IRQ %u (count=%u, pending before=0x%X, enable=0x%X) ***\n",
                irq, irq_signal_count, nvic_state.pending, nvic_state.enable);
-        
-        /* Check if this is a duplicate signal (same IRQ, still pending) */
+
         if (last_irq_signal == irq && (nvic_state.pending & (1 << irq))) {
             printf("[NVIC] WARNING: Duplicate signal for IRQ %u - still pending!\n", irq);
         }
-        
+
         last_irq_signal = irq;
-        
-        /* Just mark it as pending - the CPU will check on next cycle */
         nvic_set_pending(irq);
     }
 }

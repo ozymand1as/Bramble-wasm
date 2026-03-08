@@ -291,6 +291,7 @@ void cpu_init(void) {
     cpu.debug_enabled = 0;
     cpu.current_irq = 0xFFFFFFFF;
     cpu.primask = 0;
+    cpu.control = 0;
     cpu.vtor = 0x10000100;
 
     /* Initialize memory bus to use cpu.ram */
@@ -503,21 +504,50 @@ void cpu_step(void) {
     }
 
     timer_tick(1);
+    systick_tick(1);
 
     /* Check for pending interrupts (only if PRIMASK allows) */
     if (!cpu.primask) {
+        /* Get active exception priority (0xFF if no active exception) */
+        uint8_t active_pri = 0xFF;
+        if (cpu.current_irq != 0xFFFFFFFF) {
+            active_pri = nvic_get_exception_priority(cpu.current_irq);
+        }
+
+        /* Check external IRQs */
         uint32_t pending_irq = nvic_get_pending_irq();
-
         if (pending_irq != 0xFFFFFFFF) {
-            uint32_t vector_num = pending_irq + 16;
-
-            if (cpu.debug_enabled) {
-                printf("[CPU] *** INTERRUPT: IRQ %u detected ***\n", pending_irq);
+            uint8_t pending_pri = nvic_state.priority[pending_irq] & 0xC0;
+            /* Only deliver if strictly higher priority (lower number) */
+            if (pending_pri < active_pri) {
+                if (cpu.debug_enabled) {
+                    printf("[CPU] *** INTERRUPT: IRQ %u (pri=0x%02X) preempting (active_pri=0x%02X) ***\n",
+                           pending_irq, pending_pri, active_pri);
+                }
+                nvic_clear_pending(pending_irq);
+                cpu_exception_entry(pending_irq + 16);
+                return;
             }
+        }
 
-            nvic_clear_pending(pending_irq);
-            cpu_exception_entry(vector_num);
-            return;
+        /* Check SysTick pending */
+        if (systick_state.pending) {
+            uint8_t systick_pri = nvic_get_exception_priority(EXC_SYSTICK);
+            if (systick_pri < active_pri) {
+                systick_state.pending = 0;
+                cpu_exception_entry(EXC_SYSTICK);
+                return;
+            }
+        }
+
+        /* Check PendSV pending */
+        if (nvic_state.pendsv_pending) {
+            uint8_t pendsv_pri = nvic_get_exception_priority(EXC_PENDSV);
+            if (pendsv_pri < active_pri) {
+                nvic_state.pendsv_pending = 0;
+                cpu_exception_entry(EXC_PENDSV);
+                return;
+            }
         }
     }
 
@@ -542,6 +572,31 @@ void cpu_step(void) {
                 pc_updated = 0;
                 instr_bl_32(instr, instr2);
                 /* pc_updated is set inside instr_bl_32 */
+                return;
+            }
+
+            /* MSR: upper = 0xF380 | Rn, lower = 0x88xx | SYSm */
+            if ((instr & 0xFFF0) == 0xF380 && (instr2 & 0xFF00) == 0x8800) {
+                uint8_t rn = instr & 0xF;
+                uint8_t sysm = instr2 & 0xFF;
+                instr_msr_32(rn, sysm);
+                cpu.r[15] = pc + 4;
+                return;
+            }
+
+            /* MRS: upper = 0xF3EF, lower = 0x8Rss (Rd in [11:8], SYSm in [7:0]) */
+            if ((instr & 0xFFFF) == 0xF3EF && (instr2 & 0xF000) == 0x8000) {
+                uint8_t rd = (instr2 >> 8) & 0xF;
+                uint8_t sysm = instr2 & 0xFF;
+                instr_mrs_32(rd, sysm);
+                cpu.r[15] = pc + 4;
+                return;
+            }
+
+            /* DSB/DMB/ISB: upper = 0xF3BF, lower = 0x8F4x/8F5x/8F6x */
+            if ((instr & 0xFFFF) == 0xF3BF && (instr2 & 0xFF00) == 0x8F00) {
+                /* Memory barriers are NOPs in our emulator */
+                cpu.r[15] = pc + 4;
                 return;
             }
 
@@ -656,6 +711,7 @@ static void cpu_step_core_via_single(int core_id) {
     int saved_debug_asm = cpu.debug_asm;
     uint32_t saved_irq = cpu.current_irq;
     uint32_t saved_primask = cpu.primask;
+    uint32_t saved_control = cpu.control;
 
     /* 2. Load core registers into global cpu */
     memcpy(cpu.r, cores[core_id].r, sizeof(cpu.r));
@@ -666,6 +722,7 @@ static void cpu_step_core_via_single(int core_id) {
     cpu.debug_asm    = cores[core_id].debug_asm;
     cpu.current_irq  = cores[core_id].current_irq;
     cpu.primask      = cores[core_id].primask;
+    cpu.control      = cores[core_id].control;
 
     /* 3. Redirect memory bus to this core's RAM (zero-copy!) */
     uint32_t ram_base = (core_id == CORE0) ? CORE0_RAM_START : CORE1_RAM_START;
@@ -684,6 +741,7 @@ static void cpu_step_core_via_single(int core_id) {
     cores[core_id].step_count   = cpu.step_count;
     cores[core_id].current_irq  = cpu.current_irq;
     cores[core_id].primask      = cpu.primask;
+    cores[core_id].control      = cpu.control;
 
     if (cpu.r[15] == 0xFFFFFFFF) {
         cores[core_id].is_halted = 1;
@@ -698,6 +756,7 @@ static void cpu_step_core_via_single(int core_id) {
     cpu.debug_asm = saved_debug_asm;
     cpu.current_irq = saved_irq;
     cpu.primask = saved_primask;
+    cpu.control = saved_control;
 
     /* 8. Restore memory bus to default */
     mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);

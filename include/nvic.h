@@ -18,10 +18,21 @@
 #define NVIC_IABR                   (NVIC_BASE + 0x300)  /* IRQ Active Bit Register */
 #define NVIC_IPR                    (NVIC_BASE + 0x400)   /* Interrupt Priority Register (0-7) */
 
+/* SysTick Registers (0xE000E010 - 0xE000E01F) */
+#define SYST_CSR                    (NVIC_BASE + 0x010)   /* SysTick Control and Status */
+#define SYST_RVR                    (NVIC_BASE + 0x014)   /* SysTick Reload Value */
+#define SYST_CVR                    (NVIC_BASE + 0x018)   /* SysTick Current Value */
+#define SYST_CALIB                  (NVIC_BASE + 0x01C)   /* SysTick Calibration */
+
 /* System Handler Base */
 #define SCB_BASE                    (NVIC_BASE + 0xD00)
 #define SCB_ICSR                    (SCB_BASE + 0x04)     /* Interrupt Control and State Register */
 #define SCB_VTOR                    (SCB_BASE + 0x08)     /* Vector Table Offset Register */
+#define SCB_AIRCR                   (SCB_BASE + 0x0C)     /* Application Interrupt and Reset Control */
+#define SCB_SCR                     (SCB_BASE + 0x10)     /* System Control Register */
+#define SCB_CCR                     (SCB_BASE + 0x14)     /* Configuration and Control */
+#define SCB_SHPR2                   (NVIC_BASE + 0xD1C)   /* System Handler Priority 2 (SVCall) */
+#define SCB_SHPR3                   (NVIC_BASE + 0xD20)   /* System Handler Priority 3 (PendSV, SysTick) */
 
 /* System Handlers (Exceptions 0-15) */
 #define EXC_RESET                   1
@@ -82,13 +93,24 @@
 #define ICSR_PENDSTSET              (1 << 30)
 #define ICSR_PENDSTCLR              (1 << 31)
 
+/* SysTick State */
+typedef struct {
+    uint32_t csr;               /* Control and Status Register */
+    uint32_t rvr;               /* Reload Value Register (24-bit) */
+    uint32_t cvr;               /* Current Value Register (24-bit) */
+    int pending;                /* SysTick exception pending */
+} systick_state_t;
+
 /* NVIC State Structure */
 typedef struct {
     uint32_t enable;                /* ISER - Interrupt enable bits */
     uint32_t pending;               /* ISPR - Pending interrupt bits */
     uint8_t priority[NUM_EXTERNAL_IRQS];  /* IPR - Priority for each IRQ */
     uint32_t active_exceptions;     /* Bitmask of currently executing exceptions */
-    uint32_t iabr;             /* IABR - Active Bit Register */
+    uint32_t iabr;                  /* IABR - Active Bit Register */
+    uint32_t shpr2;                 /* System Handler Priority 2 (SVCall) */
+    uint32_t shpr3;                 /* System Handler Priority 3 (PendSV, SysTick) */
+    int pendsv_pending;             /* PendSV exception pending */
 } nvic_state_t;
 
 /* Functions */
@@ -110,6 +132,15 @@ void nvic_write_register(uint32_t addr, uint32_t val);
 /* Signal from peripherals that interrupt occurred */
 void nvic_signal_irq(uint32_t irq);
 
+/* Get effective priority of an exception vector number */
+uint8_t nvic_get_exception_priority(uint32_t vector_num);
+
+/* SysTick functions */
+void systick_init(void);
+void systick_reset(void);
+void systick_tick(uint32_t cycles);
+
 extern nvic_state_t nvic_state;
+extern systick_state_t systick_state;
 
 #endif /* NVIC_H */

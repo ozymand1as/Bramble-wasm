@@ -553,15 +553,17 @@ TEST(test_dual_core_shared_ram) {
     reset_cpu();
     dual_core_init();
 
-    /* Use address above CORE1_RAM_END to avoid per-core overlap */
-    uint32_t shared_addr = SHARED_RAM_BASE + 0x2000; /* 0x20042000 */
+    /* Test at SHARED_RAM_BASE itself (0x20040000) - overlap region fixed */
+    mem_write32_dual(CORE0, SHARED_RAM_BASE, 0x55AA55AA);
 
-    /* Write to shared RAM via core 0 */
-    mem_write32_dual(CORE0, shared_addr, 0x55AA55AA);
+    /* Core 1 should see it (was broken before shared RAM overlap fix) */
+    ASSERT_EQ(0x55AA55AA, mem_read32_dual(CORE1, SHARED_RAM_BASE),
+              "Both cores should see shared RAM writes at SHARED_RAM_BASE");
 
-    /* Core 1 should see it */
-    ASSERT_EQ(0x55AA55AA, mem_read32_dual(CORE1, shared_addr),
-              "Both cores should see shared RAM writes");
+    /* Also test above the overlap region */
+    mem_write32_dual(CORE0, SHARED_RAM_BASE + 0x4000, 0xBEEFCAFE);
+    ASSERT_EQ(0xBEEFCAFE, mem_read32_dual(CORE1, SHARED_RAM_BASE + 0x4000),
+              "Both cores should see shared RAM writes above overlap");
 
     PASS();
 }
@@ -811,6 +813,314 @@ TEST(test_push_pop) {
 }
 
 /* ========================================================================
+ * SysTick Timer Tests
+ * ======================================================================== */
+
+TEST(test_systick_registers) {
+    reset_cpu();
+    systick_reset();
+
+    /* Write RVR and verify */
+    nvic_write_register(SYST_RVR, 0x00FFFFFF);
+    ASSERT_EQ(0x00FFFFFF, nvic_read_register(SYST_RVR), "SysTick RVR should store 24-bit value");
+
+    /* Write CVR (clears to 0 and clears COUNTFLAG) */
+    systick_state.csr |= (1u << 16); /* Set COUNTFLAG */
+    nvic_write_register(SYST_CVR, 0x12345);
+    ASSERT_EQ(0, nvic_read_register(SYST_CVR), "Writing CVR should clear it to 0");
+    ASSERT_EQ(0, systick_state.csr & (1u << 16), "Writing CVR should clear COUNTFLAG");
+
+    /* CALIB register */
+    uint32_t calib = nvic_read_register(SYST_CALIB);
+    ASSERT_TRUE(calib & 0x80000000, "CALIB NOREF bit should be set");
+
+    PASS();
+}
+
+TEST(test_systick_countdown) {
+    reset_cpu();
+    systick_reset();
+
+    /* Configure: RVR=10, enable with TICKINT */
+    systick_state.rvr = 10;
+    systick_state.cvr = 10;
+    systick_state.csr = 0x3; /* ENABLE | TICKINT */
+
+    /* Tick 5 times - counter should decrement */
+    for (int i = 0; i < 5; i++) systick_tick(1);
+    ASSERT_EQ(5, systick_state.cvr, "SysTick CVR should be 5 after 5 ticks from 10");
+
+    /* Tick to zero */
+    for (int i = 0; i < 5; i++) systick_tick(1);
+    /* Counter hits 0, COUNTFLAG set, reloads from RVR */
+    ASSERT_TRUE(systick_state.csr & (1u << 16), "COUNTFLAG should be set after reaching 0");
+    ASSERT_TRUE(systick_state.pending, "SysTick should be pending (TICKINT enabled)");
+
+    PASS();
+}
+
+TEST(test_systick_disabled_no_count) {
+    reset_cpu();
+    systick_reset();
+
+    systick_state.rvr = 100;
+    systick_state.cvr = 100;
+    systick_state.csr = 0; /* Disabled */
+
+    systick_tick(10);
+    ASSERT_EQ(100, systick_state.cvr, "Disabled SysTick should not count down");
+
+    PASS();
+}
+
+/* ========================================================================
+ * MSR/MRS Tests (32-bit Instruction Dispatch)
+ * ======================================================================== */
+
+TEST(test_mrs_primask) {
+    reset_cpu();
+    cpu.primask = 1;
+    cpu.r[3] = 0;
+
+    instr_mrs_32(3, 0x10); /* MRS R3, PRIMASK */
+    ASSERT_EQ(1, cpu.r[3], "MRS should read PRIMASK into R3");
+
+    PASS();
+}
+
+TEST(test_msr_primask) {
+    reset_cpu();
+    cpu.r[2] = 1;
+
+    instr_msr_32(2, 0x10); /* MSR PRIMASK, R2 */
+    ASSERT_EQ(1, cpu.primask, "MSR should write R2 to PRIMASK");
+
+    cpu.r[2] = 0;
+    instr_msr_32(2, 0x10);
+    ASSERT_EQ(0, cpu.primask, "MSR should clear PRIMASK");
+
+    PASS();
+}
+
+TEST(test_mrs_xpsr) {
+    reset_cpu();
+    cpu.xpsr = 0xF1000000; /* N,Z,C,V flags + Thumb */
+
+    instr_mrs_32(0, 0x03); /* MRS R0, xPSR */
+    ASSERT_EQ(0xF1000000, cpu.r[0], "MRS xPSR should return full xPSR");
+
+    instr_mrs_32(1, 0x00); /* MRS R1, APSR (flags only) */
+    ASSERT_EQ(0xF0000000, cpu.r[1], "MRS APSR should return flags only");
+
+    PASS();
+}
+
+TEST(test_msr_apsr_flags) {
+    reset_cpu();
+    cpu.r[0] = 0xA0000000; /* N=1, C=1 */
+
+    instr_msr_32(0, 0x00); /* MSR APSR, R0 */
+    ASSERT_EQ(0xA1000000, cpu.xpsr, "MSR APSR should set N,C flags preserving Thumb bit");
+
+    PASS();
+}
+
+TEST(test_mrs_msr_control) {
+    reset_cpu();
+    cpu.r[0] = 0x2; /* SPSEL=1 */
+
+    instr_msr_32(0, 0x14); /* MSR CONTROL, R0 */
+    ASSERT_EQ(0x2, cpu.control, "MSR should write CONTROL");
+
+    cpu.r[1] = 0;
+    instr_mrs_32(1, 0x14); /* MRS R1, CONTROL */
+    ASSERT_EQ(0x2, cpu.r[1], "MRS should read CONTROL");
+
+    PASS();
+}
+
+TEST(test_32bit_msr_dispatch) {
+    reset_cpu();
+    cpu.r[0] = 1;
+
+    /* Encode MSR PRIMASK, R0 as a 32-bit instruction in flash */
+    /* upper = 0xF380 | Rn(0) = 0xF380 */
+    /* lower = 0x8800 | SYSm(0x10) = 0x8810 */
+    uint32_t pc_off = cpu.r[15] - FLASH_BASE;
+    cpu.flash[pc_off + 0] = 0x80; /* 0xF380 little-endian */
+    cpu.flash[pc_off + 1] = 0xF3;
+    cpu.flash[pc_off + 2] = 0x10; /* 0x8810 little-endian */
+    cpu.flash[pc_off + 3] = 0x88;
+
+    uint32_t pc_before = cpu.r[15];
+    cpu_step();
+
+    ASSERT_EQ(1, cpu.primask, "32-bit MSR PRIMASK dispatch should set PRIMASK");
+    ASSERT_EQ(pc_before + 4, cpu.r[15], "PC should advance by 4 for 32-bit instruction");
+
+    PASS();
+}
+
+TEST(test_32bit_mrs_dispatch) {
+    reset_cpu();
+    cpu.primask = 1;
+    cpu.r[3] = 0;
+
+    /* Encode MRS R3, PRIMASK as a 32-bit instruction in flash */
+    /* upper = 0xF3EF */
+    /* lower = 0x8310 (Rd=3 in bits [11:8], SYSm=0x10) */
+    uint32_t pc_off = cpu.r[15] - FLASH_BASE;
+    cpu.flash[pc_off + 0] = 0xEF; /* 0xF3EF little-endian */
+    cpu.flash[pc_off + 1] = 0xF3;
+    cpu.flash[pc_off + 2] = 0x10; /* 0x8310 little-endian */
+    cpu.flash[pc_off + 3] = 0x83;
+
+    uint32_t pc_before = cpu.r[15];
+    cpu_step();
+
+    ASSERT_EQ(1, cpu.r[3], "32-bit MRS dispatch should read PRIMASK into R3");
+    ASSERT_EQ(pc_before + 4, cpu.r[15], "PC should advance by 4");
+
+    PASS();
+}
+
+TEST(test_32bit_dsb_dispatch) {
+    reset_cpu();
+
+    /* Encode DSB as a 32-bit instruction in flash */
+    /* upper = 0xF3BF, lower = 0x8F4F */
+    uint32_t pc_off = cpu.r[15] - FLASH_BASE;
+    cpu.flash[pc_off + 0] = 0xBF;
+    cpu.flash[pc_off + 1] = 0xF3;
+    cpu.flash[pc_off + 2] = 0x4F;
+    cpu.flash[pc_off + 3] = 0x8F;
+
+    uint32_t pc_before = cpu.r[15];
+    cpu_step();
+
+    /* DSB should be a NOP - just advance PC by 4 */
+    ASSERT_EQ(pc_before + 4, cpu.r[15], "DSB should advance PC by 4");
+
+    PASS();
+}
+
+/* ========================================================================
+ * NVIC Priority Preemption Tests
+ * ======================================================================== */
+
+TEST(test_nvic_priority_preemption_blocked) {
+    reset_cpu();
+
+    /* Simulate being in an IRQ handler with priority 0x00 (highest) */
+    cpu.current_irq = 16; /* External IRQ 0 */
+    nvic_state.priority[0] = 0x00; /* Current active has highest priority */
+
+    /* Set up a lower-priority IRQ (IRQ 1, priority 0x80) as pending */
+    nvic_state.priority[1] = 0x80;
+    nvic_enable_irq(1);
+    nvic_set_pending(1);
+
+    /* Place a NOP at current PC */
+    uint32_t pc_off = cpu.r[15] - FLASH_BASE;
+    cpu.flash[pc_off] = 0x00;
+    cpu.flash[pc_off + 1] = 0xBF;
+
+    uint32_t pc_before = cpu.r[15];
+    cpu_step();
+
+    /* Lower priority IRQ should NOT preempt */
+    ASSERT_EQ(pc_before + 2, cpu.r[15], "Lower-priority IRQ should not preempt");
+    ASSERT_TRUE(nvic_state.pending & (1 << 1), "IRQ 1 should still be pending");
+
+    PASS();
+}
+
+TEST(test_nvic_priority_preemption_allowed) {
+    reset_cpu();
+
+    /* Simulate being in an IRQ handler with priority 0xC0 (lowest) */
+    cpu.current_irq = 17; /* External IRQ 1 */
+    nvic_state.priority[1] = 0xC0;
+
+    /* Set up a higher-priority IRQ (IRQ 0, priority 0x00) */
+    nvic_state.priority[0] = 0x00;
+    nvic_enable_irq(0);
+    nvic_set_pending(0);
+
+    /* Set up vector table entry for IRQ 0 (vector 16) */
+    uint32_t handler = FLASH_BASE + 0x400;
+    uint32_t vec_off = (cpu.vtor + 16 * 4) - FLASH_BASE;
+    uint32_t handler_thumb = handler | 1;
+    memcpy(&cpu.flash[vec_off], &handler_thumb, 4);
+
+    /* Place NOP at handler so it doesn't crash */
+    cpu.flash[handler - FLASH_BASE] = 0x00;
+    cpu.flash[handler - FLASH_BASE + 1] = 0xBF;
+
+    /* Place a NOP at current PC */
+    uint32_t pc_off = cpu.r[15] - FLASH_BASE;
+    cpu.flash[pc_off] = 0x00;
+    cpu.flash[pc_off + 1] = 0xBF;
+
+    cpu_step();
+
+    /* Higher priority IRQ should preempt */
+    ASSERT_EQ(handler, cpu.r[15], "Higher-priority IRQ should preempt");
+
+    PASS();
+}
+
+TEST(test_nvic_exception_priority_lookup) {
+    reset_cpu();
+
+    /* Default priorities should be 0 */
+    ASSERT_EQ(0, nvic_get_exception_priority(EXC_HARDFAULT), "HardFault priority should be 0");
+    ASSERT_EQ(0, nvic_get_exception_priority(EXC_NMI), "NMI priority should be 0");
+
+    /* Set SVCall priority */
+    nvic_write_register(SCB_SHPR2, 0xC0000000); /* SVCall = priority 3 */
+    ASSERT_EQ(0xC0, nvic_get_exception_priority(EXC_SVCALL), "SVCall priority should be 0xC0");
+
+    /* Set SysTick and PendSV priority */
+    /* SysTick at byte 3 (bits [31:24]), PendSV at byte 2 (bits [23:16]) */
+    nvic_write_register(SCB_SHPR3, 0x80400000); /* SysTick=0x80, PendSV=0x40 */
+    ASSERT_EQ(0x80, nvic_get_exception_priority(EXC_SYSTICK), "SysTick priority should be 0x80");
+    ASSERT_EQ(0x40, nvic_get_exception_priority(EXC_PENDSV), "PendSV priority should be 0x40");
+
+    /* External IRQ priority */
+    nvic_set_priority(5, 0x40);
+    ASSERT_EQ(0x40, nvic_get_exception_priority(16 + 5), "IRQ 5 priority should be 0x40");
+
+    PASS();
+}
+
+/* ========================================================================
+ * SCB Register Tests
+ * ======================================================================== */
+
+TEST(test_scb_shpr_registers) {
+    reset_cpu();
+
+    nvic_write_register(SCB_SHPR2, 0x80000000);
+    ASSERT_EQ(0x80000000, nvic_read_register(SCB_SHPR2), "SHPR2 should store SVCall priority");
+
+    nvic_write_register(SCB_SHPR3, 0xC0C00000);
+    ASSERT_EQ(0xC0C00000, nvic_read_register(SCB_SHPR3), "SHPR3 should store PendSV/SysTick priority");
+
+    PASS();
+}
+
+TEST(test_scb_vtor_write) {
+    reset_cpu();
+
+    nvic_write_register(SCB_VTOR, 0x10000200);
+    ASSERT_EQ(0x10000200, cpu.vtor, "Writing SCB_VTOR should update cpu.vtor");
+    ASSERT_EQ(0x10000200, nvic_read_register(SCB_VTOR), "Reading SCB_VTOR should return cpu.vtor");
+
+    PASS();
+}
+
+/* ========================================================================
  * Main
  * ======================================================================== */
 
@@ -822,6 +1132,7 @@ int main(void) {
     /* Initialize emulator subsystems */
     cpu_init();
     nvic_init();
+    systick_init();
     timer_init();
     gpio_init();
 
@@ -899,6 +1210,38 @@ int main(void) {
     printf("[Instruction Integration]\n");
     RUN_TEST(test_str_ldr_sp_imm8);
     RUN_TEST(test_push_pop);
+    printf("\n");
+
+    /* SysTick Timer Tests */
+    printf("[SysTick Timer]\n");
+    RUN_TEST(test_systick_registers);
+    RUN_TEST(test_systick_countdown);
+    RUN_TEST(test_systick_disabled_no_count);
+    printf("\n");
+
+    /* MSR/MRS Tests */
+    printf("[MSR/MRS Instructions]\n");
+    RUN_TEST(test_mrs_primask);
+    RUN_TEST(test_msr_primask);
+    RUN_TEST(test_mrs_xpsr);
+    RUN_TEST(test_msr_apsr_flags);
+    RUN_TEST(test_mrs_msr_control);
+    RUN_TEST(test_32bit_msr_dispatch);
+    RUN_TEST(test_32bit_mrs_dispatch);
+    RUN_TEST(test_32bit_dsb_dispatch);
+    printf("\n");
+
+    /* NVIC Priority Preemption Tests */
+    printf("[NVIC Priority Preemption]\n");
+    RUN_TEST(test_nvic_priority_preemption_blocked);
+    RUN_TEST(test_nvic_priority_preemption_allowed);
+    RUN_TEST(test_nvic_exception_priority_lookup);
+    printf("\n");
+
+    /* SCB Register Tests */
+    printf("[SCB Registers]\n");
+    RUN_TEST(test_scb_shpr_registers);
+    RUN_TEST(test_scb_vtor_write);
     printf("\n");
 
     /* Summary */

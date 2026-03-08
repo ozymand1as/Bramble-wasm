@@ -83,6 +83,7 @@ typedef struct {
     int debug_asm;                  /* Instruction-level tracing (-asm) */
     uint32_t current_irq;           /* Active interrupt number */
     uint32_t primask;               /* PRIMASK register (1=interrupts disabled) */
+    uint32_t control;               /* CONTROL register (SPSEL, nPRIV) */
 
 } cpu_state_t;
 
@@ -131,6 +132,7 @@ typedef struct {
     int debug_asm;
     uint32_t current_irq;
     uint32_t primask;               /* PRIMASK register (1=interrupts disabled) */
+    uint32_t control;               /* CONTROL register (SPSEL, nPRIV) */
 
     /* Dual-core extensions */
     int core_id;                    /* 0 or 1 */

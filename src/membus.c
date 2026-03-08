@@ -295,6 +295,15 @@ void mem_write32_dual(int core_id, uint32_t addr, uint32_t val) {
         return;  /* Flash writes ignored */
     }
 
+    /* Shared RAM checked FIRST to resolve overlap with Core 1 per-core range */
+    if (addr >= SHARED_RAM_BASE && addr < SHARED_RAM_BASE + SHARED_RAM_SIZE) {
+        uint32_t offset = (addr - SHARED_RAM_BASE) / 4;
+        if (offset < (SHARED_RAM_SIZE / 4)) {
+            shared_ram[offset] = val;
+        }
+        return;
+    }
+
     if (core_id == CORE0 && addr >= CORE0_RAM_START && addr < CORE0_RAM_END) {
         uint32_t offset = addr - CORE0_RAM_START;
         memcpy(&cores[CORE0].ram[offset], &val, 4);
@@ -304,14 +313,6 @@ void mem_write32_dual(int core_id, uint32_t addr, uint32_t val) {
     if (core_id == CORE1 && addr >= CORE1_RAM_START && addr < CORE1_RAM_END) {
         uint32_t offset = addr - CORE1_RAM_START;
         memcpy(&cores[CORE1].ram[offset], &val, 4);
-        return;
-    }
-
-    if (addr >= SHARED_RAM_BASE && addr < SHARED_RAM_BASE + SHARED_RAM_SIZE) {
-        uint32_t offset = (addr - SHARED_RAM_BASE) / 4;
-        if (offset < (SHARED_RAM_SIZE / 4)) {
-            shared_ram[offset] = val;
-        }
         return;
     }
 
@@ -359,6 +360,14 @@ uint32_t mem_read32_dual(int core_id, uint32_t addr) {
         return val;
     }
 
+    /* Shared RAM checked FIRST to resolve overlap with Core 1 per-core range */
+    if (addr >= SHARED_RAM_BASE && addr < SHARED_RAM_BASE + SHARED_RAM_SIZE) {
+        uint32_t offset = (addr - SHARED_RAM_BASE) / 4;
+        if (offset < (SHARED_RAM_SIZE / 4)) {
+            return shared_ram[offset];
+        }
+    }
+
     /* Per-core RAM regions */
     if (core_id == CORE0 && addr >= CORE0_RAM_START && addr < CORE0_RAM_END) {
         uint32_t offset = addr - CORE0_RAM_START;
@@ -372,14 +381,6 @@ uint32_t mem_read32_dual(int core_id, uint32_t addr) {
         uint32_t val = 0;
         memcpy(&val, &cores[CORE1].ram[offset], 4);
         return val;
-    }
-
-    /* Shared RAM (accessible by both cores) */
-    if (addr >= SHARED_RAM_BASE && addr < SHARED_RAM_BASE + SHARED_RAM_SIZE) {
-        uint32_t offset = (addr - SHARED_RAM_BASE) / 4;
-        if (offset < (SHARED_RAM_SIZE / 4)) {
-            return shared_ram[offset];
-        }
     }
 
     /* Route peripheral reads through single-core memory bus */

@@ -1,5 +1,62 @@
 # Bramble RP2040 Emulator - Updates
 
+## [0.6.0] - 2026-03-08
+
+### Phase 1: Core Correctness (Complete)
+
+1. **SysTick Timer** (`nvic.c`, `nvic.h`)
+   - Full SysTick implementation: SYST_CSR, SYST_RVR, SYST_CVR, SYST_CALIB registers
+   - `systick_tick()` called every CPU step; decrements CVR, sets COUNTFLAG on wrap
+   - TICKINT (bit 1) pends SysTick exception for priority-based delivery
+   - COUNTFLAG (bit 16) cleared on CSR read per ARM spec
+   - SDK `sleep_ms()` / `sleep_us()` now unblocked
+
+2. **MSR/MRS 32-bit Instructions** (`instructions.c`, `cpu.c`)
+   - Full MSR: write APSR flags (bits [31:28]), MSP (R13), PRIMASK, CONTROL
+   - Full MRS: read APSR, IPSR, EPSR, xPSR, MSP, PRIMASK, CONTROL
+   - 32-bit dispatch in `cpu_step()`: MSR (0xF380), MRS (0xF3EF), DSB/DMB/ISB (0xF3BF)
+   - Note: MOVW/MOVT/LDR.W/STR.W/B.W are NOT valid on M0+ (Thumb-2 only)
+
+3. **NVIC Priority Preemption** (`nvic.c`, `cpu.c`)
+   - `nvic_get_exception_priority()` returns effective priority for any vector number
+   - Interrupt delivery compares pending priority vs. active exception priority
+   - Only delivers if strictly higher priority (lower numeric value)
+   - SCB_SHPR2/SHPR3 configure SVCall, PendSV, and SysTick priorities
+   - 4 priority levels via bits [7:6] (Cortex-M0+ compliant)
+
+4. **Fixed Shared RAM Overlap** (`membus.c`)
+   - Reordered range checks in `mem_read32_dual()` and `mem_write32_dual()`
+   - Shared RAM (>= 0x20040000) now checked before per-core RAM
+   - Addresses 0x20040000-0x2004FFFF correctly resolve to shared RAM for both cores
+
+5. **CONTROL Register** (`emulator.h`, `cpu.c`)
+   - Added `uint32_t control` to both `cpu_state_t` and `cpu_state_dual_t`
+   - Preserved across dual-core context switches
+   - Read/write via MSR/MRS with SYSm 0x14
+
+6. **SCB Register Expansion** (`nvic.c`)
+   - Read: SCB_AIRCR, SCB_SCR, SCB_CCR (STKALIGN=1), SCB_SHPR2, SCB_SHPR3
+   - Write: SCB_VTOR (128-byte aligned), SCB_ICSR (PENDSVSET/CLR, PENDSTSET/CLR)
+   - ICSR read returns VECTPENDING, ISRPENDING, PENDSVSET, PENDSTSET
+
+### Test Suite
+
+7. **16 new tests** (52 total, up from 36) (`tests/test_suite.c`)
+   - SysTick: registers, countdown, disabled-no-count
+   - MSR/MRS: PRIMASK, xPSR, APSR flags, CONTROL, 32-bit dispatch (MSR, MRS, DSB)
+   - NVIC preemption: blocked (lower can't preempt higher), allowed (higher preempts lower), priority lookup
+   - SCB: SHPR register read/write, VTOR write
+   - Updated `test_dual_core_shared_ram` to use SHARED_RAM_BASE directly (overlap fixed)
+
+### Known Remaining Issues
+
+- No DMA, USB, PIO emulation
+- UART is Tx only (no Rx)
+- Timer model is 1 cycle = 1 microsecond (not cycle-accurate)
+- SDK boot path blocked by missing Resets/Clocks/XOSC/PLL stubs (Phase 2)
+
+---
+
 ## [0.5.0] - 2026-03-08
 
 ### Performance
@@ -80,10 +137,11 @@
     - Categories: PRIMASK, SVC, RAM execution, dispatch table, peripheral stubs,
       ADCS/SBCS/RSBS, dual-core memory, ELF loader, memory bus, instruction integration
 
-### Known Remaining Issues
+### Known Remaining Issues (Resolved in v0.6.0)
 
-- Shared RAM (0x20040000) overlaps with Core 1's per-core RAM range (0x20021000-0x20042000);
-  addresses 0x20040000-0x20041FFF resolve to Core 1's per-core RAM instead of shared RAM
+All items below were fixed in v0.6.0:
+
+- ~~Shared RAM (0x20040000) overlaps with Core 1's per-core RAM range~~ -> Reordered range checks
 - No DMA, USB, PIO emulation
 - UART is Tx only (no Rx)
 - Timer model is 1 cycle = 1 microsecond (not cycle-accurate)
@@ -190,6 +248,7 @@ All items below were fixed in v0.5.0:
 
 | Version | Date       | Highlights                                                                |
 |---------|------------|---------------------------------------------------------------------------|
+| 0.6.0   | 2026-03-08 | Phase 1: SysTick, MSR/MRS, NVIC preemption, shared RAM fix, 52 tests     |
 | 0.5.0   | 2026-03-08 | Zero-copy dual-core, dispatch table, PRIMASK, SVC, ELF loader, test suite |
 | 0.4.0   | 2026-03-08 | 15 bug fixes, 3 performance improvements, audit-driven                    |
 | 0.3.0   | 2025-12-30 | Unified single/dual-core, FIFO, spinlocks |
@@ -200,6 +259,7 @@ All items below were fixed in v0.5.0:
 ## Git History Summary
 
 ```
+0.6.0  (2026-03-08)  Phase 1: Core correctness (SysTick, MSR/MRS, NVIC preemption)
 0.5.0  (2026-03-08)  Performance, correctness, features, and test suite
 0.4.0  (2026-03-08)  Audit-driven bug fixes and performance improvements
 0.3.0  (2025-12-30)  Unified main, dual-core production release

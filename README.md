@@ -2,16 +2,16 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: **v0.5.0 - Production Ready** ✅
+## Current Status: **v0.6.0 - Production Ready** ✅
 
-Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides working UART0 output, full GPIO emulation, hardware timer support with alarms, SPI/I2C/PWM peripheral stubs, PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a 36-test unit test suite.
+Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides working UART0 output, full GPIO emulation, hardware timer support with alarms, **SysTick timer**, SPI/I2C/PWM peripheral stubs, **NVIC priority preemption**, full **MSR/MRS** support, PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a 52-test unit test suite.
 
 ### ✅ What Works
 
 - **Complete RP2040 Memory Map**: Flash (0x10000000), SRAM (0x20000000), SIO (0xD0000000), and APB peripherals
 - **UF2 & ELF Firmware Loading**: Parses UF2 blocks or ELF32 ARM binaries into flash/RAM with proper address validation
 - **O(1) Instruction Dispatch**: 256-entry lookup table indexed by `instr >> 8` with secondary dispatchers for ALU/misc blocks
-- **Full ARM Cortex-M0+ Thumb Instruction Set**: 60+ instructions across 4 phases:
+- **Full ARM Cortex-M0+ Thumb Instruction Set**: 65+ instructions across 4 phases:
 
   **Phase 1 - Foundational (Bootloader Essential):**
   - Data movement: MOVS, MOV (with high register support)
@@ -32,7 +32,8 @@ Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instru
 
   **Phase 3 - Important (Advanced Features):**
   - Special comparison: CMN, TST
-  - System: SVC (triggers SVCall exception), MSR, MRS
+  - System: SVC (triggers SVCall exception)
+  - 32-bit instructions: MSR/MRS (PRIMASK, CONTROL, xPSR, MSP), DSB/DMB/ISB
   - High register operations
   - PRIMASK support: CPSID/CPSIE control interrupt delivery
 
@@ -52,6 +53,16 @@ Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instru
   - PADS_BANK0 pad control (pull-up/down, drive strength)
   - Interrupt registers (enable, force, status)
   - All 10 GPIO functions supported (SIO, UART, SPI, I2C, PWM, PIO, etc.)
+- **✨ SysTick Timer**: Full ARM SysTick implementation with:
+  - SYST_CSR, SYST_RVR, SYST_CVR, SYST_CALIB registers
+  - Counter decrements every CPU step, reloads from RVR on wrap
+  - COUNTFLAG (bit 16) set on underflow, cleared on CSR read
+  - TICKINT generates SysTick exception through NVIC priority system
+- **✨ NVIC Priority Preemption**: Proper interrupt priority enforcement:
+  - 4 priority levels via bits [7:6] (Cortex-M0+ compliant)
+  - Pending IRQs only preempt if strictly higher priority than active exception
+  - SCB_SHPR2/SHPR3 for SVCall, PendSV, SysTick priority configuration
+  - PendSV set/clear via SCB_ICSR
 - **✨ Hardware Timer**: Full 64-bit microsecond timer with:
   - 64-bit counter incrementing with CPU cycles
   - 4 independent alarm channels (ALARM0-3)
@@ -70,7 +81,7 @@ Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instru
   - SIO (Single-cycle I/O) for atomic operations
 - **Peripheral Stubs**: SPI0/SPI1 (PL022 idle status), I2C0/I2C1, PWM return sensible defaults so SDK firmware doesn't crash during init
 - **RAM Execution**: PC accepted in RAM range (0x20000000-0x20042000) for flash programming routines and performance-critical code
-- **✨ Unit Test Suite**: 36 tests covering all major features, integrated with CTest
+- **✨ Unit Test Suite**: 52 tests covering all major features, integrated with CTest
 - **Proper Reset Sequence**: Vector table parsing, SP/PC initialization from flash
 - **Clean Halt Detection**: BKPT instruction properly stops execution with register dump
 
@@ -117,11 +128,11 @@ All registers preserved correctly, flags set accurately, GPIO state properly man
 
 ### ⚠️ Known Limitations
 
-- **Shared RAM Overlap**: Addresses 0x20040000-0x20041FFF resolve to Core 1's per-core RAM instead of shared RAM due to range overlap in the memory map
-- **Limited Peripheral Emulation**: UART0, GPIO, Timer, SPI/I2C/PWM stubs implemented; DMA, USB, PIO not emulated
+- **SDK Boot Path**: Missing Resets, Clocks, XOSC, PLL peripheral stubs (Phase 2) - SDK init hangs waiting for these
+- **Limited Peripheral Emulation**: UART0, GPIO, Timer, SysTick, SPI/I2C/PWM stubs implemented; DMA, USB, PIO not emulated
 - **No Cycle Accuracy**: Instructions execute in logical order; timer uses simplified 1 cycle = 1 microsecond model
 - **UART Tx Only**: No receive (Rx) emulation
-- See [NVIC Audit Report](docs/NVIC_audit_report.md) for interrupt controller details
+- See [ROADMAP](docs/ROADMAP.md) for full status and next phases
 
 ## Building and Running
 
@@ -289,7 +300,7 @@ Bramble/
 │   ├── timer.h         # Timer register definitions
 │   └── nvic.h          # NVIC register definitions
 ├── tests/
-│   └── test_suite.c    # Unit test suite (36 tests, CTest integrated)
+│   └── test_suite.c    # Unit test suite (52 tests, CTest integrated)
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test
@@ -491,7 +502,7 @@ if (timer_low_32bits >= alarm_value) {
 
 Instructions are dispatched via a 256-entry O(1) lookup table indexed by `instr >> 8`:
 
-1. **32-bit instructions** (BL/BLX, MSR/MRS) detected by top-5-bit check and handled before table lookup
+1. **32-bit instructions** (BL/BLX, MSR/MRS, DSB/DMB/ISB) detected by top-5-bit check and handled before table lookup
 2. **16-bit instructions** dispatched via `dispatch_table[instr >> 8](instr)` in constant time
 3. **Secondary dispatchers** handle entries where multiple instructions share the same top byte (ALU block 0x40-0x43, hints 0xBF, etc.)
 4. **`pc_updated` flag**: Handlers that modify PC set this flag; `cpu_step()` auto-advances PC by 2 only if unset
@@ -558,22 +569,25 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 
 ## Future Work
 
-### High Priority
+### High Priority (Phase 2 - SDK Boot Path)
 
-1. **Fix Shared RAM Overlap**: Reorder memory checks so shared RAM (0x20040000+) resolves correctly for both cores
-2. **UART Rx**: Implement receive path for bidirectional serial communication
-3. **Full Peripheral Emulation**: DMA controller, USB, PIO state machines
+1. **Resets Peripheral Stub** (0x4000C000): `reset_block()` / `unreset_block_wait()` - SDK init loops without this
+2. **Clocks Peripheral Stub** (0x40008000): CLK_REF, CLK_SYS, CLK_PERI configuration
+3. **XOSC/PLL Stubs**: Crystal oscillator and PLL lock status
+4. **ROM Function Table**: Stub implementations for SDK utility functions
 
 ### Medium Priority
 
-1. **Cycle-Accurate Timing**: Replace 1:1 cycle-to-microsecond model with configurable ratio
-2. **Debugging Features**: Hardware breakpoints, watchpoints, GDB remote stub
-3. **NVIC Priority Scheduling**: Highest-priority-first when multiple interrupts pending
+1. **UART Rx**: Implement receive path for bidirectional serial communication
+2. **Cycle-Accurate Timing**: Replace 1:1 cycle-to-microsecond model with configurable ratio
+3. **Debugging Features**: Hardware breakpoints, watchpoints, GDB remote stub
+4. **Full Peripheral Emulation**: DMA controller, USB, PIO state machines
 
 ### Low Priority
 
 1. **Performance**: JIT compilation for hot loops, instruction caching
 2. **Visualization**: Web-based register display, memory map explorer
+3. **SRAM Aliasing**: Map 0x21-0x25 ranges with XOR/SET/CLR semantics
 
 ## Contributing
 

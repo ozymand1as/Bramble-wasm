@@ -1,5 +1,65 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.6.0] - 2026-03-08
+
+### Added - Phase 1: Core Correctness
+
+**SysTick Timer**:
+
+- Full SysTick implementation with SYST_CSR/RVR/CVR/CALIB registers
+- Counter decrements every CPU step, reloads from RVR on wrap
+- COUNTFLAG and TICKINT generate SysTick exceptions through priority-based NVIC delivery
+
+**32-bit Instruction Dispatch**:
+
+- MSR (0xF380 8800): write APSR flags, MSP, PRIMASK, CONTROL
+- MRS (0xF3EF 8xxx): read APSR, IPSR, EPSR, xPSR, MSP, PRIMASK, CONTROL
+- DSB/DMB/ISB (0xF3BF 8Fxx): memory barrier NOPs (correct for emulator)
+
+**NVIC Priority Preemption**:
+
+- `nvic_get_exception_priority()` for any exception vector number
+- Pending IRQs only delivered when priority < active exception's priority
+- SCB_SHPR2/SHPR3 for SVCall, PendSV, SysTick priority configuration
+- PendSV set/clear via SCB_ICSR writes
+
+**CONTROL Register**:
+
+- Added to both `cpu_state_t` and `cpu_state_dual_t`
+- Read/write via MSR/MRS, preserved across dual-core context switches
+
+**SCB Registers**:
+
+- Read: AIRCR, SCR, CCR (STKALIGN=1), SHPR2, SHPR3, ICSR (with pending bits)
+- Write: VTOR (128-byte aligned), ICSR (PENDSVSET/CLR, PENDSTSET/CLR), SHPR2, SHPR3
+
+### Fixed
+
+- **Shared RAM overlap**: Reordered dual-core memory checks so shared RAM (>= 0x20040000) resolves before per-core RAM
+
+### Testing
+
+- 16 new tests (52 total): SysTick, MSR/MRS, NVIC preemption, SCB registers
+
+### Files Modified
+
+- `src/nvic.c` - SysTick, priority system, SCB register expansion
+- `src/cpu.c` - SysTick tick, priority preemption, 32-bit dispatch, CONTROL save/restore
+- `src/instructions.c` - Full MSR/MRS implementation
+- `src/membus.c` - Shared RAM overlap fix
+- `include/nvic.h` - SysTick/SCB definitions, systick_state_t, extended nvic_state_t
+- `include/emulator.h` - CONTROL register field
+- `include/instructions.h` - MSR/MRS 32-bit prototypes
+- `tests/test_suite.c` - 16 new tests
+
+### Known Issues
+
+- SDK boot path blocked by missing Resets/Clocks/XOSC/PLL peripheral stubs (Phase 2)
+- No DMA, USB, or PIO emulation
+- Timer uses simplified 1 cycle = 1 microsecond model
+
+---
+
 ## [0.5.0] - 2026-03-08
 
 ### Added - Performance, Correctness & Features

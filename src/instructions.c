@@ -860,10 +860,85 @@ void instr_mov_high_reg(uint16_t instr) {
     instr_mov_reg(instr);
 }
 
+/**
+ * MSR - Write to special register (32-bit instruction)
+ * Called from cpu_step() with decoded Rn and SYSm fields.
+ */
+void instr_msr_32(uint8_t rn, uint8_t sysm) {
+    uint32_t val = cpu.r[rn];
+    switch (sysm) {
+        case 0x00: /* APSR - write flags only (N,Z,C,V in bits [31:28]) */
+        case 0x01: /* IAPSR */
+        case 0x02: /* EAPSR */
+        case 0x03: /* xPSR */
+            cpu.xpsr = (cpu.xpsr & 0x0FFFFFFF) | (val & 0xF0000000);
+            break;
+        case 0x08: /* MSP (Main Stack Pointer) */
+            cpu.r[13] = val;
+            break;
+        case 0x09: /* PSP (Process Stack Pointer) - accept but no separate tracking */
+            break;
+        case 0x10: /* PRIMASK */
+            cpu.primask = val & 1;
+            break;
+        case 0x14: /* CONTROL */
+            cpu.control = val & 0x3;
+            break;
+        default:
+            break;
+    }
+    if (cpu.debug_enabled) {
+        printf("[MSR] SYSm=0x%02X R%u=0x%08X\n", sysm, rn, val);
+    }
+}
+
+/**
+ * MRS - Read from special register (32-bit instruction)
+ * Called from cpu_step() with decoded Rd and SYSm fields.
+ */
+void instr_mrs_32(uint8_t rd, uint8_t sysm) {
+    uint32_t val = 0;
+    switch (sysm) {
+        case 0x00: /* APSR - flags only */
+            val = cpu.xpsr & 0xF0000000;
+            break;
+        case 0x01: /* IAPSR */
+        case 0x02: /* EAPSR */
+        case 0x03: /* xPSR */
+            val = cpu.xpsr;
+            break;
+        case 0x05: /* IPSR - exception number */
+            val = cpu.xpsr & 0x3F;
+            break;
+        case 0x06: /* EPSR - Thumb bit */
+            val = cpu.xpsr & 0x01000000;
+            break;
+        case 0x08: /* MSP */
+            val = cpu.r[13];
+            break;
+        case 0x09: /* PSP */
+            val = 0; /* Not tracking PSP separately */
+            break;
+        case 0x10: /* PRIMASK */
+            val = cpu.primask;
+            break;
+        case 0x14: /* CONTROL */
+            val = cpu.control;
+            break;
+        default:
+            break;
+    }
+    cpu.r[rd] = val;
+    if (cpu.debug_enabled) {
+        printf("[MRS] R%u = 0x%08X (SYSm=0x%02X)\n", rd, val, sysm);
+    }
+}
+
+/* Legacy wrappers for backward compatibility (16-bit stubs) */
 void instr_msr(uint32_t instr) {
     (void)instr;
     if (cpu.debug_enabled) {
-        printf("[INSTR] MSR instruction at 0x%08X (not implemented)\n", cpu.r[15]);
+        printf("[INSTR] MSR (legacy stub) at 0x%08X\n", cpu.r[15]);
     }
 }
 
@@ -871,7 +946,7 @@ void instr_mrs(uint32_t instr) {
     uint8_t rd = (instr >> 8) & 0x0F;
     cpu.r[rd] = cpu.xpsr;
     if (cpu.debug_enabled) {
-        printf("[INSTR] MRS R%u = 0x%08X (XPSR)\n", rd, cpu.r[rd]);
+        printf("[INSTR] MRS R%u = 0x%08X (XPSR, legacy)\n", rd, cpu.r[rd]);
     }
 }
 
