@@ -26,6 +26,145 @@ cpu_state_t cpu = {0};
 int pc_updated = 0;
 
 /* ========================================================================
+ * Cycle-Accurate Timing
+ * ======================================================================== */
+
+timing_config_t timing_config = {
+    .cycles_per_us = 1,         /* Default: 1 cycle = 1 µs (fast-forward) */
+    .cycle_accumulator = 0,
+};
+
+void timing_set_clock_mhz(uint32_t mhz) {
+    if (mhz == 0) mhz = 1;
+    timing_config.cycles_per_us = mhz;
+    timing_config.cycle_accumulator = 0;
+}
+
+/*
+ * ARMv6-M (Cortex-M0+) instruction cycle costs.
+ * Reference: ARM DDI 0484C, Cortex-M0+ Technical Reference Manual, Table 3-1.
+ *
+ * Most data processing: 1 cycle
+ * Branch (taken): 2 cycles (pipeline refill)
+ * Branch (not taken): 1 cycle
+ * LDR/STR: 2 cycles
+ * LDR Rd, [PC, #]: 2 cycles
+ * LDR/STR register-offset: 2 cycles
+ * PUSH/POP: 1 + N (N = register count)
+ * LDMIA/STMIA: 1 + N
+ * BX/BLX: 3 cycles
+ * BL (32-bit): 4 cycles
+ * MUL: 1 cycle (M0+ has single-cycle multiplier)
+ * MSR/MRS: 4 cycles
+ * DSB/DMB/ISB: 3 cycles
+ */
+uint32_t timing_instruction_cycles(uint16_t instr, int branch_taken) {
+    uint8_t top8 = instr >> 8;
+
+    /* Shifts (top8 0x00-0x17): LSL/LSR/ASR imm5 — 1 cycle */
+    if (top8 <= 0x17) return 1;
+
+    /* ADD/SUB reg/imm3 (top8 0x18-0x1F) — 1 cycle */
+    if (top8 <= 0x1F) return 1;
+
+    /* MOVS/CMP/ADDS/SUBS imm8 (top8 0x20-0x3F) — 1 cycle */
+    if (top8 <= 0x3F) return 1;
+
+    /* ALU operations (0x40-0x43): 1 cycle */
+    if (top8 <= 0x43) return 1;
+
+    /* Special data processing (0x44-0x46): ADD/CMP/MOV high regs: 1 cycle */
+    if (top8 <= 0x46) return 1;
+
+    /* BX/BLX register (0x47): 3 cycles */
+    if (top8 == 0x47) return 3;
+
+    /* LDR Rd, [PC, #imm8] (0x48-0x4F): 2 cycles */
+    if (top8 <= 0x4F) return 2;
+
+    /* Load/store register offset (0x50-0x5F): 2 cycles */
+    if (top8 <= 0x5F) return 2;
+
+    /* STR/LDR imm5 word (0x60-0x6F): 2 cycles */
+    if (top8 <= 0x6F) return 2;
+
+    /* STRB/LDRB imm5 (0x70-0x7F): 2 cycles */
+    if (top8 <= 0x7F) return 2;
+
+    /* STRH/LDRH imm5 (0x80-0x8F): 2 cycles */
+    if (top8 <= 0x8F) return 2;
+
+    /* STR/LDR SP-relative (0x90-0x9F): 2 cycles */
+    if (top8 <= 0x9F) return 2;
+
+    /* ADR (0xA0-0xA7): 1 cycle */
+    if (top8 >= 0xA0 && top8 <= 0xA7) return 1;
+
+    /* ADD Rd, SP, #imm8 (0xA8-0xAF): 1 cycle */
+    if (top8 >= 0xA8 && top8 <= 0xAF) return 1;
+
+    /* Miscellaneous 16-bit (0xB0-0xBF) */
+    if (top8 == 0xB0) return 1;  /* ADD/SUB SP */
+    if (top8 == 0xB2) return 1;  /* SXTH/SXTB/UXTH/UXTB */
+    if (top8 == 0xB4 || top8 == 0xB5) {
+        /* PUSH: 1 + N (count set bits in reglist + LR bit) */
+        int n = __builtin_popcount(instr & 0xFF) + ((instr >> 8) & 1);
+        return 1 + (uint32_t)n;
+    }
+    if (top8 == 0xB6) return 1;  /* CPS */
+    if (top8 == 0xBA) return 1;  /* REV/REV16/REVSH */
+    if (top8 == 0xBC || top8 == 0xBD) {
+        /* POP: 1 + N (count set bits in reglist + PC bit) */
+        int n = __builtin_popcount(instr & 0xFF) + ((instr >> 8) & 1);
+        /* If popping PC, extra pipeline refill cycle */
+        if (instr & 0x100) n++;
+        return 1 + (uint32_t)n;
+    }
+    if (top8 == 0xBE) return 1;  /* BKPT */
+    if (top8 == 0xBF) return 1;  /* NOP/hints */
+
+    /* STMIA/LDMIA (0xC0-0xCF): 1 + N */
+    if (top8 >= 0xC0 && top8 <= 0xCF) {
+        int n = __builtin_popcount(instr & 0xFF);
+        return 1 + (uint32_t)n;
+    }
+
+    /* Conditional branch (0xD0-0xDD): 1 if not taken, 2 if taken */
+    if (top8 >= 0xD0 && top8 <= 0xDD) return branch_taken ? 2 : 1;
+
+    /* UDF (0xDE): 1 cycle */
+    if (top8 == 0xDE) return 1;
+
+    /* SVC (0xDF): triggers exception entry, counted separately */
+    if (top8 == 0xDF) return 1;
+
+    /* Unconditional branch (0xE0-0xE7): 2 cycles (always taken) */
+    if (top8 >= 0xE0 && top8 <= 0xE7) return 2;
+
+    return 1;  /* Default */
+}
+
+uint32_t timing_instruction_cycles_32(uint16_t upper, uint16_t lower) {
+    /* BL: 4 cycles */
+    if ((upper & 0xF800) == 0xF000 && (lower & 0xD000) == 0xD000)
+        return 4;
+
+    /* MSR: 4 cycles */
+    if ((upper & 0xFFF0) == 0xF380 && (lower & 0xFF00) == 0x8800)
+        return 4;
+
+    /* MRS: 4 cycles */
+    if ((upper & 0xFFFF) == 0xF3EF && (lower & 0xF000) == 0x8000)
+        return 4;
+
+    /* DSB/DMB/ISB: 3 cycles */
+    if ((upper & 0xFFFF) == 0xF3BF && (lower & 0xFF00) == 0x8F00)
+        return 3;
+
+    return 2;  /* Default for unknown 32-bit */
+}
+
+/* ========================================================================
  * Instruction Dispatch Table
  *
  * 256-entry table indexed by bits [15:8] of 16-bit Thumb instruction.
@@ -483,6 +622,26 @@ void cpu_exception_return(uint32_t lr_value) {
 }
 
 /* ========================================================================
+ * Cycle-Aware Timer/SysTick Ticking
+ *
+ * Accumulates CPU cycles and converts to microseconds based on clock
+ * frequency. At 1 cycles/µs (default), this is 1:1 like before.
+ * At 125 cycles/µs (real RP2040), it takes 125 instructions to
+ * advance the timer by 1 µs.
+ * ======================================================================== */
+
+static void timing_tick(uint32_t cycles) {
+    timing_config.cycle_accumulator += cycles;
+    uint32_t us = timing_config.cycle_accumulator / timing_config.cycles_per_us;
+    if (us > 0) {
+        timing_config.cycle_accumulator -= us * timing_config.cycles_per_us;
+        timer_tick(us);
+    }
+    /* SysTick counts in CPU cycles, not microseconds */
+    systick_tick(cycles);
+}
+
+/* ========================================================================
  * Single-Core CPU Execution (Dispatch Table)
  * ======================================================================== */
 
@@ -510,9 +669,6 @@ void cpu_step(void) {
         printf("[CPU] Step %3u: PC=0x%08X instr=0x%04X\n", cpu.step_count, pc, instr);
     }
 
-    timer_tick(1);
-    systick_tick(1);
-
     /* Check for pending interrupts (only if PRIMASK allows) */
     if (!cpu.primask) {
         /* Get active exception priority (0xFF if no active exception) */
@@ -533,6 +689,7 @@ void cpu_step(void) {
                 }
                 nvic_clear_pending(pending_irq);
                 cpu_exception_entry(pending_irq + 16);
+                timing_tick(1);
                 return;
             }
         }
@@ -543,6 +700,7 @@ void cpu_step(void) {
             if (systick_pri < active_pri) {
                 systick_state.pending = 0;
                 cpu_exception_entry(EXC_SYSTICK);
+                timing_tick(1);
                 return;
             }
         }
@@ -553,6 +711,7 @@ void cpu_step(void) {
             if (pendsv_pri < active_pri) {
                 nvic_state.pendsv_pending = 0;
                 cpu_exception_entry(EXC_PENDSV);
+                timing_tick(1);
                 return;
             }
         }
@@ -561,6 +720,7 @@ void cpu_step(void) {
     /* NOP: all-zero halfword */
     if (instr == 0x0000) {
         cpu.r[15] = pc + 2;
+        timing_tick(1);
         return;
     }
 
@@ -578,7 +738,7 @@ void cpu_step(void) {
                 }
                 pc_updated = 0;
                 instr_bl_32(instr, instr2);
-                /* pc_updated is set inside instr_bl_32 */
+                timing_tick(timing_instruction_cycles_32(instr, instr2));
                 return;
             }
 
@@ -588,6 +748,7 @@ void cpu_step(void) {
                 uint8_t sysm = instr2 & 0xFF;
                 instr_msr_32(rn, sysm);
                 cpu.r[15] = pc + 4;
+                timing_tick(timing_instruction_cycles_32(instr, instr2));
                 return;
             }
 
@@ -597,6 +758,7 @@ void cpu_step(void) {
                 uint8_t sysm = instr2 & 0xFF;
                 instr_mrs_32(rd, sysm);
                 cpu.r[15] = pc + 4;
+                timing_tick(timing_instruction_cycles_32(instr, instr2));
                 return;
             }
 
@@ -604,6 +766,7 @@ void cpu_step(void) {
             if ((instr & 0xFFFF) == 0xF3BF && (instr2 & 0xFF00) == 0x8F00) {
                 /* Memory barriers are NOPs in our emulator */
                 cpu.r[15] = pc + 4;
+                timing_tick(timing_instruction_cycles_32(instr, instr2));
                 return;
             }
 
@@ -622,6 +785,10 @@ void cpu_step(void) {
     if (!pc_updated) {
         cpu.r[15] = pc + 2;
     }
+
+    /* Determine if a branch was taken (PC changed to something other than pc+2) */
+    int branch_taken = (cpu.r[15] != pc + 2);
+    timing_tick(timing_instruction_cycles(instr, branch_taken));
 }
 
 /* ========================================================================

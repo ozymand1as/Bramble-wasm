@@ -1,6 +1,6 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.14.0
+## Current State: v0.15.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
@@ -178,9 +178,13 @@ on M0+. The original roadmap incorrectly listed these.
 ### 4.3 ROM Bootloader
 - Full boot2 simulation or skip-to-application shortcut
 
-### 4.4 Cycle-Accurate Timing
-- Configurable cycles-per-microsecond ratio
-- Instruction timing table
+### 4.4 Cycle-Accurate Timing [COMPLETE]
+~~Configurable cycles-per-microsecond ratio~~
+- `-clock <MHz>` flag: configurable clock frequency (default 1, real RP2040: 125)
+- ARMv6-M instruction timing table based on Cortex-M0+ TRM (DDI 0484C)
+- Cycle accumulator converts CPU cycles to microseconds for timer
+- SysTick counts in raw CPU cycles (correct per ARM spec)
+- Per-instruction costs: ALU=1, LDR/STR=2, BX=3, BL=4, PUSH/POP=1+N, branches=1-2
 
 ### 4.5 GDB Remote Stub [COMPLETE]
 ~~TCP server implementing GDB RSP~~

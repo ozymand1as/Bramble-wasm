@@ -2125,6 +2125,142 @@ TEST(test_rom_flash_functions_in_table) {
 }
 
 /* ========================================================================
+ * Cycle Timing Tests
+ * ======================================================================== */
+
+TEST(test_timing_default_cycles_per_us) {
+    reset_cpu();
+    /* Default should be 1 cycle per µs (fast-forward mode) */
+    ASSERT_EQ(1, timing_config.cycles_per_us, "Default cycles_per_us should be 1");
+    PASS();
+}
+
+TEST(test_timing_set_clock_mhz) {
+    reset_cpu();
+    timing_set_clock_mhz(125);
+    ASSERT_EQ(125, timing_config.cycles_per_us, "cycles_per_us should be 125 after set");
+    ASSERT_EQ(0, timing_config.cycle_accumulator, "accumulator should reset to 0");
+    /* Restore default */
+    timing_set_clock_mhz(1);
+    PASS();
+}
+
+TEST(test_timing_alu_1_cycle) {
+    /* ALU instructions (MOVS, ADDS, etc.) should be 1 cycle */
+    ASSERT_EQ(1, timing_instruction_cycles(0x2000, 0), "MOVS Rd, #imm8 = 1 cycle");
+    ASSERT_EQ(1, timing_instruction_cycles(0x1800, 0), "ADDS Rd, Rn, Rm = 1 cycle");
+    ASSERT_EQ(1, timing_instruction_cycles(0x4000, 0), "ANDS = 1 cycle");
+    PASS();
+}
+
+TEST(test_timing_load_store_2_cycles) {
+    /* LDR/STR should be 2 cycles */
+    ASSERT_EQ(2, timing_instruction_cycles(0x6800, 0), "LDR Rd, [Rn, #imm5] = 2 cycles");
+    ASSERT_EQ(2, timing_instruction_cycles(0x6000, 0), "STR Rd, [Rn, #imm5] = 2 cycles");
+    ASSERT_EQ(2, timing_instruction_cycles(0x4800, 0), "LDR Rd, [PC, #] = 2 cycles");
+    ASSERT_EQ(2, timing_instruction_cycles(0x5800, 0), "LDR reg-offset = 2 cycles");
+    PASS();
+}
+
+TEST(test_timing_branch_taken) {
+    /* Conditional branch taken = 2 cycles, not taken = 1 cycle */
+    ASSERT_EQ(2, timing_instruction_cycles(0xD000, 1), "BEQ taken = 2 cycles");
+    ASSERT_EQ(1, timing_instruction_cycles(0xD000, 0), "BEQ not taken = 1 cycle");
+    /* Unconditional branch always 2 cycles */
+    ASSERT_EQ(2, timing_instruction_cycles(0xE000, 0), "B uncond = 2 cycles");
+    PASS();
+}
+
+TEST(test_timing_bx_blx_3_cycles) {
+    /* BX/BLX register = 3 cycles */
+    ASSERT_EQ(3, timing_instruction_cycles(0x4700, 0), "BX Rm = 3 cycles");
+    ASSERT_EQ(3, timing_instruction_cycles(0x4780, 0), "BLX Rm = 3 cycles");
+    PASS();
+}
+
+TEST(test_timing_push_pop_1_plus_n) {
+    /* PUSH {R0, R1} = 1 + 2 = 3 cycles */
+    ASSERT_EQ(3, timing_instruction_cycles(0xB403, 0), "PUSH {R0,R1} = 3 cycles");
+    /* PUSH {R0, LR} = 1 + 2 = 3 cycles (bit 8 = LR) */
+    ASSERT_EQ(3, timing_instruction_cycles(0xB501, 0), "PUSH {R0,LR} = 3 cycles");
+    /* POP {R0} = 1 + 1 = 2 cycles */
+    ASSERT_EQ(2, timing_instruction_cycles(0xBC01, 0), "POP {R0} = 2 cycles");
+    /* POP {R0, PC} = 1 + 1 + 1(PC refill) + 1(PC bit) = 4 cycles */
+    ASSERT_EQ(4, timing_instruction_cycles(0xBD01, 0), "POP {R0,PC} = 4 cycles");
+    PASS();
+}
+
+TEST(test_timing_bl_32bit_4_cycles) {
+    /* BL (32-bit) = 4 cycles */
+    ASSERT_EQ(4, timing_instruction_cycles_32(0xF000, 0xF800), "BL = 4 cycles");
+    /* MSR = 4 cycles */
+    ASSERT_EQ(4, timing_instruction_cycles_32(0xF380, 0x8800), "MSR = 4 cycles");
+    /* DSB = 3 cycles */
+    ASSERT_EQ(3, timing_instruction_cycles_32(0xF3BF, 0x8F40), "DSB = 3 cycles");
+    PASS();
+}
+
+TEST(test_timing_accumulator_125mhz) {
+    reset_cpu();
+    timing_set_clock_mhz(125);
+    timer_reset();
+
+    /* Timer should not advance until 125 cycles accumulated */
+    uint64_t t0 = timer_state.time_us;
+
+    /* Manually tick 124 cycles — should not advance timer */
+    timing_config.cycle_accumulator = 0;
+    timing_config.cycle_accumulator += 124;
+    uint32_t us = timing_config.cycle_accumulator / timing_config.cycles_per_us;
+    ASSERT_EQ(0, us, "124 cycles at 125MHz = 0 µs");
+
+    /* 125 cycles should give exactly 1 µs */
+    timing_config.cycle_accumulator = 125;
+    us = timing_config.cycle_accumulator / timing_config.cycles_per_us;
+    ASSERT_EQ(1, us, "125 cycles at 125MHz = 1 µs");
+
+    /* 250 cycles = 2 µs */
+    timing_config.cycle_accumulator = 250;
+    us = timing_config.cycle_accumulator / timing_config.cycles_per_us;
+    ASSERT_EQ(2, us, "250 cycles at 125MHz = 2 µs");
+
+    (void)t0;
+    /* Restore default */
+    timing_set_clock_mhz(1);
+    PASS();
+}
+
+TEST(test_timing_backward_compat) {
+    /* At 1 cycle/µs (default), timer should advance 1 µs per instruction step */
+    reset_cpu();
+    timing_set_clock_mhz(1);
+    timer_reset();
+    timing_config.cycle_accumulator = 0;
+
+    uint64_t t0 = timer_state.time_us;
+
+    /* Place a MOVS R0, #0 instruction at PC */
+    uint32_t pc = cpu.r[15];
+    mem_write16(pc, 0x2000);  /* MOVS R0, #0 */
+    mem_write16(pc + 2, 0xBE00);  /* BKPT (to stop) */
+
+    cpu_step();  /* Execute MOVS R0, #0 */
+
+    uint64_t t1 = timer_state.time_us;
+    ASSERT_EQ(1, (uint32_t)(t1 - t0), "1 cycle/µs: MOVS should advance timer by 1 µs");
+    timing_set_clock_mhz(1);
+    PASS();
+}
+
+TEST(test_timing_stmia_ldmia_1_plus_n) {
+    /* STMIA R0!, {R1,R2,R3} = 1 + 3 = 4 cycles */
+    ASSERT_EQ(4, timing_instruction_cycles(0xC00E, 0), "STMIA {R1,R2,R3} = 4 cycles");
+    /* LDMIA R0!, {R1} = 1 + 1 = 2 cycles */
+    ASSERT_EQ(2, timing_instruction_cycles(0xC802, 0), "LDMIA {R1} = 2 cycles");
+    PASS();
+}
+
+/* ========================================================================
  * Main Entry Point
  * ======================================================================== */
 
@@ -2466,6 +2602,20 @@ int main(void) {
     RUN_TEST(test_xip_sram_readwrite);
     RUN_TEST(test_xip_flash_aliases);
     END_CATEGORY("XIP Cache Control");
+
+    BEGIN_CATEGORY("Cycle Timing");
+    RUN_TEST(test_timing_default_cycles_per_us);
+    RUN_TEST(test_timing_set_clock_mhz);
+    RUN_TEST(test_timing_alu_1_cycle);
+    RUN_TEST(test_timing_load_store_2_cycles);
+    RUN_TEST(test_timing_branch_taken);
+    RUN_TEST(test_timing_bx_blx_3_cycles);
+    RUN_TEST(test_timing_push_pop_1_plus_n);
+    RUN_TEST(test_timing_bl_32bit_4_cycles);
+    RUN_TEST(test_timing_accumulator_125mhz);
+    RUN_TEST(test_timing_backward_compat);
+    RUN_TEST(test_timing_stmia_ldmia_1_plus_n);
+    END_CATEGORY("Cycle Timing");
 
     printf("\n========================================\n");
     printf(" Results: %d/%d passed, %d failed\n", tests_passed, tests_run, tests_failed);

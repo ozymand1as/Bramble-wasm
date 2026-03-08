@@ -1,5 +1,45 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.15.0] - 2026-03-08
+
+### Added - Cycle-Accurate Timing
+
+**Configurable Clock Frequency** (`-clock <MHz>`):
+
+- Replaces fixed 1:1 cycle-to-microsecond model with configurable ratio
+- Default: 1 MHz (backward compatible, 1 cycle = 1 µs)
+- Real RP2040: 125 MHz (125 cycles per 1 µs timer tick)
+- Cycle accumulator converts CPU cycles to microseconds for timer
+- SysTick counts in CPU cycles (correct per ARM spec)
+
+**ARMv6-M Instruction Timing Table**:
+
+- Per-instruction cycle costs based on ARM Cortex-M0+ TRM (DDI 0484C)
+- Data processing (ALU, shifts, moves): 1 cycle
+- Load/store (all widths and modes): 2 cycles
+- BX/BLX register: 3 cycles
+- Conditional branch: 1 (not taken) or 2 (taken) cycles
+- Unconditional branch: 2 cycles
+- PUSH/POP: 1 + N cycles (N = register count, +1 for PC pipeline refill)
+- STMIA/LDMIA: 1 + N cycles
+- BL (32-bit): 4 cycles
+- MSR/MRS: 4 cycles
+- DSB/DMB/ISB: 3 cycles
+
+### Testing
+
+- **11 new tests** (194 total, up from 183)
+- Cycle Timing category: default config, set_clock_mhz, ALU=1, load/store=2, branch taken/not taken, BX/BLX=3, PUSH/POP=1+N, BL/MSR/DSB 32-bit costs, 125MHz accumulator, backward compatibility, STMIA/LDMIA=1+N
+
+### Files Modified
+
+- `include/emulator.h` - `timing_config_t`, timing API declarations
+- `src/cpu.c` - Instruction timing table, cycle accumulator, `timing_tick()` helper
+- `src/main.c` - `-clock <MHz>` flag
+- `tests/test_suite.c` - 11 new cycle timing tests
+
+---
+
 ## [0.14.0] - 2026-03-08
 
 ### Added - GDB Remote Debugging

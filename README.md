@@ -2,9 +2,9 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: **v0.14.0 - Production Ready** ✅
+## Current Status: **v0.15.0 - Production Ready** ✅
 
-Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides **bidirectional dual UART** (Tx + Rx with 16-deep FIFO and stdin polling), full GPIO emulation, hardware timer support with alarms, **SysTick timer**, **SDK boot peripherals** (Resets, Clocks, XOSC, PLLs, Watchdog), **ADC with temperature sensor**, **full SPI/I2C/PWM peripherals**, **12-channel DMA controller** with chaining and immediate transfers, **PIO register-level emulation** (2 blocks, 4 SMs each), **SRAM aliasing** (0x21000000 mirror), **XIP cache control** with flash aliases and 16KB XIP SRAM, **GDB remote debugging** via RSP, **ROM function table** with executable Thumb code stubs, **NVIC priority preemption**, full **MSR/MRS** support, **RP2040 atomic register aliases** (SET/CLR/XOR), PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a **183-test verbose unit test suite** across 42+ categories.
+Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides **bidirectional dual UART** (Tx + Rx with 16-deep FIFO and stdin polling), full GPIO emulation, hardware timer support with alarms, **SysTick timer**, **SDK boot peripherals** (Resets, Clocks, XOSC, PLLs, Watchdog), **ADC with temperature sensor**, **full SPI/I2C/PWM peripherals**, **12-channel DMA controller** with chaining and immediate transfers, **PIO register-level emulation** (2 blocks, 4 SMs each), **SRAM aliasing** (0x21000000 mirror), **XIP cache control** with flash aliases and 16KB XIP SRAM, **GDB remote debugging** via RSP, **cycle-accurate timing** with configurable clock frequency and per-instruction cycle costs, **ROM function table** with executable Thumb code stubs, **NVIC priority preemption**, full **MSR/MRS** support, **RP2040 atomic register aliases** (SET/CLR/XOR), PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a **194-test verbose unit test suite** across 43+ categories.
 
 ### ✅ What Works
 
@@ -119,7 +119,12 @@ Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instru
   - Up to 16 software/hardware breakpoints
   - Single-step and continue, vCont support, Ctrl-C interrupt
   - Usage: `./bramble firmware.uf2 -gdb` then `target remote :3333`
-- **✨ Unit Test Suite**: 183 tests across 42+ categories with verbose per-category reporting, integrated with CTest
+- **✨ Cycle-Accurate Timing**: Configurable clock frequency with per-instruction cycle costs:
+  - ARMv6-M timing table (ALU=1, LDR/STR=2, BX=3, BL=4, PUSH/POP=1+N cycles)
+  - Cycle accumulator converts CPU cycles to microseconds for timer
+  - SysTick counts in raw CPU cycles (correct per ARM spec)
+  - Usage: `./bramble firmware.uf2 -clock 125` for real RP2040 timing
+- **✨ Unit Test Suite**: 194 tests across 43+ categories with verbose per-category reporting, integrated with CTest
 - **Proper Reset Sequence**: Vector table parsing, SP/PC initialization from flash
 - **Clean Halt Detection**: BKPT instruction properly stops execution with register dump
 
@@ -169,7 +174,7 @@ All registers preserved correctly, flags set accurately, GPIO state properly man
 - **USB CDC**: No USB device emulation - `stdio_usb_connected()` will not work (SDK falls back to UART)
 - **PIO**: Register-level stub only — state machines do not execute PIO instructions
 - **Missing Peripherals**: USB is stub-only (disconnected state)
-- **No Cycle Accuracy**: Instructions execute in logical order; timer uses simplified 1 cycle = 1 microsecond model
+- **Cycle Timing**: Configurable via `-clock <MHz>` (default 1 MHz for fast-forward; use `-clock 125` for real RP2040 timing)
 - **UART Rx**: Receive FIFO works via `uart_rx_push()` API; stdin polling available with `-stdin` flag
 - See [ROADMAP](docs/ROADMAP.md) for full status and next phases
 
@@ -300,6 +305,7 @@ Bramble now supports flexible debug output modes:
 ./bramble firmware.uf2 -stdin           # Enable stdin → UART0 Rx
 ./bramble firmware.uf2 -gdb            # Start GDB server on port 3333
 ./bramble firmware.uf2 -gdb 4444       # GDB server on custom port
+./bramble firmware.uf2 -clock 125      # Real RP2040 timing (125 MHz)
 ```
 
 **GDB Remote Debugging:**
@@ -371,7 +377,7 @@ Bramble/
 │   ├── pio.h           # PIO register definitions
 │   └── gdb.h           # GDB RSP stub definitions
 ├── tests/
-│   └── test_suite.c    # Unit test suite (183 tests, verbose, CTest integrated)
+│   └── test_suite.c    # Unit test suite (194 tests, verbose, CTest integrated)
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test
@@ -565,10 +571,12 @@ Peripherals are integrated into the memory bus (`membus.c`):
 
 ### Timer Timing Model
 
-The timer increments every CPU cycle with a simplified timing model:
-- **1 CPU cycle = 1 microsecond** (for simulation speed)
-- Real RP2040: 125 MHz = 125 cycles per microsecond
-- Configurable in `timer_tick()` for accuracy vs. speed tradeoff
+The timer uses a cycle-accurate timing model with configurable clock frequency:
+- **Default: 1 MHz** (1 cycle = 1 µs, fast-forward mode for speed)
+- **Real RP2040: 125 MHz** (`-clock 125`, 125 cycles per microsecond)
+- Each instruction costs 1-4+ CPU cycles based on the ARMv6-M instruction timing table
+- A cycle accumulator converts CPU cycles to microseconds for the timer
+- SysTick counts in raw CPU cycles (correct per ARM Cortex-M specification)
 
 Alarms trigger when:
 ```c
@@ -651,8 +659,7 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 
 ### Medium Priority
 
-1. **Cycle-Accurate Timing**: Replace 1:1 cycle-to-microsecond model with configurable ratio
-2. **GDB Enhancements**: Watchpoints, Core 1 debugging, conditional breakpoints
+1. **GDB Enhancements**: Watchpoints, Core 1 debugging, conditional breakpoints
 
 ### Low Priority
 

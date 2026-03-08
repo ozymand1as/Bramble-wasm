@@ -48,6 +48,30 @@
 #define MEM_END         0x30000000
 
 /* ========================================================================
+ * Cycle-Accurate Timing
+ *
+ * Configurable clock frequency for accurate timer/SysTick behavior.
+ * Default: 1 cycle per µs (fast-forward mode, backward compatible).
+ * Real RP2040: 125 cycles per µs (125 MHz).
+ * ======================================================================== */
+
+typedef struct {
+    uint32_t cycles_per_us;     /* Clock cycles per microsecond (1=fast, 125=real) */
+    uint32_t cycle_accumulator; /* Accumulated cycles not yet converted to µs */
+} timing_config_t;
+
+extern timing_config_t timing_config;
+
+/* Set clock frequency in MHz (e.g., 125 for real RP2040) */
+void timing_set_clock_mhz(uint32_t mhz);
+
+/* Get instruction cycle cost for a 16-bit Thumb instruction */
+uint32_t timing_instruction_cycles(uint16_t instr, int branch_taken);
+
+/* Get cycle cost for a 32-bit Thumb instruction */
+uint32_t timing_instruction_cycles_32(uint16_t upper, uint16_t lower);
+
+/* ========================================================================
  * Peripheral Base Addresses
  * ======================================================================== */
 

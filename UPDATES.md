@@ -1,5 +1,56 @@
 # Bramble RP2040 Emulator - Updates
 
+## [0.15.0] - 2026-03-08
+
+### Phase 4.4: Cycle-Accurate Timing
+
+1. **Timing Infrastructure** (`emulator.h`, `cpu.c`)
+   - `timing_config_t` with `cycles_per_us` and `cycle_accumulator`
+   - `timing_set_clock_mhz(uint32_t mhz)` configures clock frequency
+   - `timing_tick()` helper accumulates cycles and ticks timer in microseconds
+   - SysTick ticked in raw CPU cycles (correct per ARM specification)
+
+2. **Instruction Timing Table** (`cpu.c`)
+   - `timing_instruction_cycles(uint16_t instr, int branch_taken)` for 16-bit Thumb
+   - `timing_instruction_cycles_32(uint16_t upper, uint16_t lower)` for 32-bit
+   - Based on ARM Cortex-M0+ Technical Reference Manual (DDI 0484C, Table 3-1)
+   - Every return path in `cpu_step()` now calls `timing_tick()` with correct cycle cost
+
+3. **CLI Flag** (`main.c`)
+   - `-clock <MHz>` sets CPU clock frequency
+   - Default: 1 MHz (fast-forward, backward compatible)
+   - Real RP2040 timing: `-clock 125`
+
+### Cycle Costs Summary
+
+| Instruction Class | Cycles |
+|---|---|
+| Data processing (ALU, shifts, moves, compares) | 1 |
+| Load/store (all widths and addressing modes) | 2 |
+| BX/BLX register | 3 |
+| Conditional branch (not taken) | 1 |
+| Conditional branch (taken) / unconditional B | 2 |
+| PUSH/POP | 1 + N registers (+1 for PC refill) |
+| STMIA/LDMIA | 1 + N registers |
+| BL (32-bit) | 4 |
+| MSR/MRS (32-bit) | 4 |
+| DSB/DMB/ISB (32-bit) | 3 |
+
+### Usage
+
+```bash
+# Default: fast-forward (1 cycle = 1 µs, like previous versions)
+./bramble firmware.uf2
+
+# Real RP2040 timing (125 cycles per µs)
+./bramble firmware.uf2 -clock 125
+
+# Custom frequency
+./bramble firmware.uf2 -clock 48
+```
+
+---
+
 ## [0.14.0] - 2026-03-08
 
 ### Phase 4.5: GDB Remote Debugging

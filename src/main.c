@@ -95,6 +95,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -status    Print periodic status updates\n");
         fprintf(stderr, "  -stdin     Enable stdin polling for UART0 Rx input\n");
         fprintf(stderr, "  -gdb [port] Start GDB server (default port: %d)\n", GDB_DEFAULT_PORT);
+        fprintf(stderr, "  -clock <MHz> Set CPU clock frequency (default: 1, real: 125)\n");
         return EXIT_FAILURE;
     }
 
@@ -121,6 +122,11 @@ int main(int argc, char **argv) {
             gdb_enabled = 1;
             if (i + 1 < argc && argv[i + 1][0] != '-') {
                 gdb_port = atoi(argv[++i]);
+            }
+        } else if (strcmp(argv[i], "-clock") == 0) {
+            if (i + 1 < argc) {
+                uint32_t mhz = (uint32_t)atoi(argv[++i]);
+                timing_set_clock_mhz(mhz);
             }
         }
     }
@@ -184,6 +190,11 @@ int main(int argc, char **argv) {
     if (debug1_mode) {
         cpu_set_debug_core(CORE1, 1);
         printf("[Init] Debug output enabled for Core 1\n");
+    }
+
+    if (timing_config.cycles_per_us != 1) {
+        printf("[Init] Clock: %u MHz (%u cycles/µs)\n",
+               timing_config.cycles_per_us, timing_config.cycles_per_us);
     }
 
     if (stdin_enabled) {
