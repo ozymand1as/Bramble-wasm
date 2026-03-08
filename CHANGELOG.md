@@ -1,5 +1,84 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.7.0] - 2026-03-08
+
+### Added - Phase 2: SDK Boot Path
+
+**Resets Peripheral (0x4000C000)**:
+
+- RESET register with full bitmask tracking (all 24 peripheral reset lines)
+- RESET_DONE = ~RESET (peripherals not held in reset are ready)
+- Atomic register aliases (SET/CLR/XOR) for SDK `hw_set_bits()`/`hw_clear_bits()`
+
+**Clocks Peripheral (0x40008000)**:
+
+- 10 clock generators (GPOUT0-3, REF, SYS, PERI, USB, ADC, RTC)
+- Each with CTRL, DIV, SELECTED registers at stride 0x0C
+- SELECTED always returns non-zero (clock source stable)
+- FC0_STATUS returns DONE=1, FC0_RESULT returns 125MHz
+
+**XOSC (0x40024000)**:
+
+- STATUS returns STABLE (bit 31) + ENABLED (bit 12)
+- CTRL and STARTUP registers writable
+
+**PLLs (0x40028000 / 0x4002C000)**:
+
+- PLL_SYS and PLL_USB: CS.LOCK=1 (bit 31) always set
+- PWR, FBDIV, PRIM registers writable
+- Shared implementation for both PLLs
+
+**Watchdog (0x40058000)**:
+
+- CTRL, LOAD, REASON (always 0 = clean boot), TICK registers
+- 8 scratch registers (SCRATCH0-7) for persistent data across resets
+- TICK returns RUNNING=1 when ENABLE bit set
+
+**ADC (0x4004C000)**:
+
+- 5 channels (4 GPIO + temperature sensor channel 4)
+- CS (with READY always set), RESULT, FIFO, DIV, interrupt registers
+- Temperature sensor defaults to ~27C (0x036C)
+- `adc_set_channel_value()` for test injection
+- START_ONCE auto-clears (conversion completes instantly)
+
+**UART0 Register Expansion**:
+
+- Full register set: DR, FR, IBRD, FBRD, LCR_H, CR, IMSC, RIS, MIS, ICR
+- Replaces previous minimal DR/FR handling
+
+**RP2040 Atomic Register Aliases**:
+
+- All new peripherals support SET (+0x2000), CLR (+0x3000), XOR (+0x1000) aliases
+- `apply_alias_write()` helper handles atomic bit manipulation
+- SDK `hw_set_bits()` / `hw_clear_bits()` work correctly
+
+### Testing
+
+- 15 new tests (67 total): Resets, Clocks, XOSC, PLL, Watchdog, ADC, UART registers
+
+### Files Added
+
+- `src/clocks.c` - Consolidated clock-domain peripherals (Resets, Clocks, XOSC, PLLs, Watchdog)
+- `include/clocks.h` - Clock peripheral definitions and state
+- `src/adc.c` - ADC peripheral implementation
+- `include/adc.h` - ADC definitions and state
+
+### Files Modified
+
+- `src/membus.c` - Peripheral routing for clocks, ADC, expanded UART
+- `src/main.c` - Added `clocks_init()` and `adc_init()` calls
+- `CMakeLists.txt` - Added clocks.c and adc.c to build
+- `tests/test_suite.c` - 15 new tests
+
+### Known Issues
+
+- ROM function table not yet implemented (Phase 2.7 pending)
+- No DMA, USB, or PIO emulation
+- Timer uses simplified 1 cycle = 1 microsecond model
+
+---
+
 ## [0.6.0] - 2026-03-08
 
 ### Added - Phase 1: Core Correctness

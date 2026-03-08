@@ -1,5 +1,69 @@
 # Bramble RP2040 Emulator - Updates
 
+## [0.7.0] - 2026-03-08
+
+### Phase 2: SDK Boot Path (Mostly Complete)
+
+1. **Resets Peripheral** (`clocks.c`, `clocks.h`)
+   - RESET register with full 24-bit peripheral mask
+   - RESET_DONE = `~reset & RESETS_ALL_MASK` (anything not in reset is ready)
+   - Atomic aliases (SET/CLR/XOR) at +0x1000/+0x2000/+0x3000 offsets
+   - SDK `reset_block()` / `unreset_block_wait()` now functional
+
+2. **Clocks Peripheral** (`clocks.c`, `clocks.h`)
+   - 10 clock generators with CTRL, DIV, SELECTED registers
+   - SELECTED always returns 0x1 (clock source stable)
+   - FC0 frequency counter: STATUS.DONE=1, RESULT=125MHz
+   - Power-on default: `clk_div[i] = 1 << 8` (divide by 1)
+
+3. **XOSC + PLLs** (`clocks.c`, `clocks.h`)
+   - XOSC STATUS returns STABLE | ENABLED immediately
+   - PLL_SYS and PLL_USB: CS.LOCK always set (instant lock)
+   - PWR/FBDIV/PRIM registers writable for SDK configuration flow
+
+4. **Watchdog** (`clocks.c`, `clocks.h`)
+   - REASON register returns 0 (clean boot, no watchdog/force reset)
+   - TICK register: returns RUNNING=1 when ENABLE bit set
+   - 8 scratch registers for persistent data across resets
+   - SDK watchdog tick configuration for SysTick reference clock
+
+5. **ADC** (`adc.c`, `adc.h`)
+   - 5 channels: GPIO26-29 (channels 0-3) + temperature sensor (channel 4)
+   - CS.READY always set; START_ONCE auto-clears (instant conversion)
+   - RESULT returns `channel_values[ainsel]`
+   - Temperature sensor defaults to 0x036C (~27°C)
+   - `adc_set_channel_value()` API for test injection
+
+6. **UART0 Expansion** (`membus.c`)
+   - Full register set: DR, FR, IBRD, FBRD, LCR_H, CR, IMSC, RIS, MIS, ICR
+   - FR returns TXE=1, RXFE=1 (transmit empty, receive empty)
+   - CR defaults to 0x0300 (TXE | RXE enabled)
+
+7. **Atomic Register Aliases** (`clocks.c`, `adc.c`)
+   - All peripherals support XOR (+0x1000), SET (+0x2000), CLR (+0x3000)
+   - `apply_alias_write()` helper: determines operation from address bits [13:12]
+   - Enables SDK's `hw_set_bits()` / `hw_clear_bits()` / `hw_xor_bits()`
+
+### Test Suite
+
+8. **15 new tests** (67 total, up from 52) (`tests/test_suite.c`)
+   - Resets: power-on state, release and done, atomic clear alias
+   - Clocks: selected always set, ctrl write/read
+   - XOSC: status stable
+   - PLL: sys lock, usb lock
+   - Watchdog: reason clean boot, scratch registers, tick enable
+   - ADC: cs ready, temp sensor, set channel value
+   - UART: register reads (FR, CR)
+
+### Known Remaining Issues
+
+- ROM function table not yet implemented (Phase 2.7)
+- No DMA, USB, PIO emulation
+- UART is Tx only (no Rx data path)
+- Timer model is 1 cycle = 1 microsecond (not cycle-accurate)
+
+---
+
 ## [0.6.0] - 2026-03-08
 
 ### Phase 1: Core Correctness (Complete)
@@ -248,6 +312,7 @@ All items below were fixed in v0.5.0:
 
 | Version | Date       | Highlights                                                                |
 |---------|------------|---------------------------------------------------------------------------|
+| 0.7.0   | 2026-03-08 | Phase 2: Resets, Clocks, XOSC/PLL, Watchdog, ADC, atomic aliases, 67 tests |
 | 0.6.0   | 2026-03-08 | Phase 1: SysTick, MSR/MRS, NVIC preemption, shared RAM fix, 52 tests     |
 | 0.5.0   | 2026-03-08 | Zero-copy dual-core, dispatch table, PRIMASK, SVC, ELF loader, test suite |
 | 0.4.0   | 2026-03-08 | 15 bug fixes, 3 performance improvements, audit-driven                    |
@@ -259,6 +324,7 @@ All items below were fixed in v0.5.0:
 ## Git History Summary
 
 ```
+0.7.0  (2026-03-08)  Phase 2: SDK boot path (Resets, Clocks, XOSC/PLL, Watchdog, ADC)
 0.6.0  (2026-03-08)  Phase 1: Core correctness (SysTick, MSR/MRS, NVIC preemption)
 0.5.0  (2026-03-08)  Performance, correctness, features, and test suite
 0.4.0  (2026-03-08)  Audit-driven bug fixes and performance improvements

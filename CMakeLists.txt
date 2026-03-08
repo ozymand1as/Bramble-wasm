@@ -24,6 +24,8 @@ set(SOURCES
     src/gpio.c
     src/timer.c
     src/nvic.c
+    src/clocks.c
+    src/adc.c
 )
 
 # Executable
@@ -42,6 +44,8 @@ set(LIB_SOURCES
     src/gpio.c
     src/timer.c
     src/nvic.c
+    src/clocks.c
+    src/adc.c
 )
 
 # Test executable

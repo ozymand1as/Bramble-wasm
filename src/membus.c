@@ -4,6 +4,8 @@
 #include "gpio.h"
 #include "timer.h"
 #include "nvic.h"
+#include "clocks.h"
+#include "adc.h"
 
 /* ========================================================================
  * Active RAM pointer for zero-copy dual-core context switching
@@ -44,6 +46,75 @@ static uint32_t spi_read32(uint32_t addr) {
 }
 
 /* ========================================================================
+ * Clock-Domain Peripheral Address Check
+ *
+ * RP2040 peripherals have atomic register aliases at +0x1000/+0x2000/+0x3000.
+ * Each 4KB peripheral occupies a 16KB block. We check the 16KB-aligned base.
+ * ======================================================================== */
+
+static int is_clocks_addr(uint32_t addr) {
+    uint32_t base = addr & ~0x3FFF; /* 16KB-aligned base */
+    return (base == RESETS_BASE  || base == CLOCKS_BASE ||
+            base == XOSC_BASE   || base == PLL_SYS_BASE ||
+            base == PLL_USB_BASE || base == WATCHDOG_BASE ||
+            base == PSM_BASE);
+}
+
+static int is_adc_addr(uint32_t addr) {
+    return (addr & ~0x3FFF) == ADC_BASE;
+}
+
+/* ========================================================================
+ * UART Peripheral (expanded for raw register access)
+ * ======================================================================== */
+
+static int is_uart_addr(uint32_t addr) {
+    return (addr & ~0x3FFF) == UART0_BASE;
+}
+
+static uint32_t uart_read32(uint32_t addr) {
+    uint32_t offset = addr & 0xFFF;
+    switch (offset) {
+        case 0x000: /* UARTDR - Data Register */
+            return 0; /* No Rx data */
+        case 0x018: /* UARTFR - Flag Register */
+            /* TXFE=1 (bit 7), RXFE=1 (bit 4) = TX empty, RX empty */
+            return 0x00000090;
+        case 0x024: /* UARTIBRD - Integer baud rate */
+            return 0;
+        case 0x028: /* UARTFBRD - Fractional baud rate */
+            return 0;
+        case 0x02C: /* UARTLCR_H - Line control */
+            return 0;
+        case 0x030: /* UARTCR - Control register */
+            return (1u << 0) | (1u << 8) | (1u << 9); /* UARTEN, TXE, RXE */
+        case 0x038: /* UARTIFLS - Interrupt FIFO level select */
+            return 0;
+        case 0x03C: /* UARTIMSC - Interrupt mask */
+            return 0;
+        case 0x040: /* UARTRIS - Raw interrupt status */
+            return 0;
+        case 0x044: /* UARTMIS - Masked interrupt status */
+            return 0;
+        default:
+            return 0;
+    }
+}
+
+static void uart_write32(uint32_t addr, uint32_t val) {
+    uint32_t offset = addr & 0xFFF;
+    switch (offset) {
+        case 0x000: /* UARTDR - Data Register */
+            putchar((char)(val & 0xFF));
+            fflush(stdout);
+            break;
+        default:
+            /* Accept all other UART register writes silently */
+            break;
+    }
+}
+
+/* ========================================================================
  * Single-Core Memory Access Functions
  * ======================================================================== */
 
@@ -59,9 +130,9 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
-    if (addr == UART0_DR) {
-        putchar((char)(val & 0xFF));
-        fflush(stdout);
+    /* UART registers (including atomic aliases) */
+    if (is_uart_addr(addr)) {
+        uart_write32(addr, val);
         return;
     }
 
@@ -82,6 +153,18 @@ void mem_write32(uint32_t addr, uint32_t val) {
         (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||
         (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
         gpio_write32(addr, val);
+        return;
+    }
+
+    /* Clock-domain peripherals (Resets, Clocks, XOSC, PLLs, Watchdog) */
+    if (is_clocks_addr(addr)) {
+        clocks_write32(addr, val);
+        return;
+    }
+
+    /* ADC */
+    if (is_adc_addr(addr)) {
+        adc_write32(addr, val);
         return;
     }
 
@@ -177,9 +260,9 @@ uint32_t mem_read32(uint32_t addr) {
         return val;
     }
 
-    if (addr == UART0_FR) {
-        /* PL011-style UARTFR reset: TXFE=1 (bit 7), RXFE=1 (bit 4), others 0. */
-        return 0x00000090;
+    /* UART registers (including atomic aliases) */
+    if (is_uart_addr(addr)) {
+        return uart_read32(addr);
     }
 
     /* NVIC registers (0xE000E000 - 0xE000EFFF) */
@@ -196,6 +279,16 @@ uint32_t mem_read32(uint32_t addr) {
         (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||
         (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
         return gpio_read32(addr);
+    }
+
+    /* Clock-domain peripherals (Resets, Clocks, XOSC, PLLs, Watchdog) */
+    if (is_clocks_addr(addr)) {
+        return clocks_read32(addr);
+    }
+
+    /* ADC */
+    if (is_adc_addr(addr)) {
+        return adc_read32(addr);
     }
 
     /* SPI peripheral stubs */

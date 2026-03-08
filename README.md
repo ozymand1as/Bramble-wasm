@@ -2,9 +2,9 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: **v0.6.0 - Production Ready** ✅
+## Current Status: **v0.7.0 - Production Ready** ✅
 
-Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides working UART0 output, full GPIO emulation, hardware timer support with alarms, **SysTick timer**, SPI/I2C/PWM peripheral stubs, **NVIC priority preemption**, full **MSR/MRS** support, PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a 52-test unit test suite.
+Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instruction set with O(1) dispatch, provides working UART0 output, full GPIO emulation, hardware timer support with alarms, **SysTick timer**, **SDK boot peripherals** (Resets, Clocks, XOSC, PLLs, Watchdog), **ADC with temperature sensor**, SPI/I2C/PWM peripheral stubs, **NVIC priority preemption**, full **MSR/MRS** support, **RP2040 atomic register aliases** (SET/CLR/XOR), PRIMASK interrupt masking, SVC exceptions, RAM execution, and **zero-copy dual-core support**. Includes a 67-test unit test suite.
 
 ### ✅ What Works
 
@@ -79,9 +79,22 @@ Bramble successfully boots RP2040 firmware, executes the complete Thumb-1 instru
   - Dual FIFO channels for core-to-core messaging
   - Spinlock support for synchronization
   - SIO (Single-cycle I/O) for atomic operations
+- **✨ SDK Boot Peripherals**: Complete peripheral stubs for SDK initialization:
+  - Resets (0x4000C000): reset/unreset with RESET_DONE tracking
+  - Clocks (0x40008000): 10 clock generators with CTRL/DIV/SELECTED
+  - XOSC (0x40024000): STATUS.STABLE=1, STATUS.ENABLED=1
+  - PLL_SYS/PLL_USB: CS.LOCK=1 (always locked)
+  - Watchdog (0x40058000): CTRL, TICK, SCRATCH[0-7], REASON
+  - PSM (Power State Machine): stub
+  - RP2040 atomic register aliases: SET (+0x2000), CLR (+0x3000), XOR (+0x1000)
+- **✨ ADC**: 5-channel ADC with temperature sensor:
+  - CS, RESULT, FIFO, DIV registers
+  - Channel 4 = internal temperature sensor (~27C default)
+  - Configurable channel values for testing
+- **✨ Expanded UART0**: Full register set (DR, FR, IBRD, FBRD, LCR_H, CR, IMSC, RIS, MIS)
 - **Peripheral Stubs**: SPI0/SPI1 (PL022 idle status), I2C0/I2C1, PWM return sensible defaults so SDK firmware doesn't crash during init
 - **RAM Execution**: PC accepted in RAM range (0x20000000-0x20042000) for flash programming routines and performance-critical code
-- **✨ Unit Test Suite**: 52 tests covering all major features, integrated with CTest
+- **✨ Unit Test Suite**: 67 tests covering all major features, integrated with CTest
 - **Proper Reset Sequence**: Vector table parsing, SP/PC initialization from flash
 - **Clean Halt Detection**: BKPT instruction properly stops execution with register dump
 
@@ -128,8 +141,8 @@ All registers preserved correctly, flags set accurately, GPIO state properly man
 
 ### ⚠️ Known Limitations
 
-- **SDK Boot Path**: Missing Resets, Clocks, XOSC, PLL peripheral stubs (Phase 2) - SDK init hangs waiting for these
-- **Limited Peripheral Emulation**: UART0, GPIO, Timer, SysTick, SPI/I2C/PWM stubs implemented; DMA, USB, PIO not emulated
+- **USB CDC**: No USB device emulation - `stdio_usb_connected()` will not work (use UART stdio instead)
+- **Limited Peripheral Emulation**: UART0, GPIO, Timer, SysTick, ADC, Resets, Clocks, XOSC, PLLs, Watchdog, SPI/I2C/PWM stubs; DMA, USB, PIO not emulated
 - **No Cycle Accuracy**: Instructions execute in logical order; timer uses simplified 1 cycle = 1 microsecond model
 - **UART Tx Only**: No receive (Rx) emulation
 - See [ROADMAP](docs/ROADMAP.md) for full status and next phases
@@ -292,15 +305,19 @@ Bramble/
 │   ├── uf2.c           # UF2 file loader
 │   ├── gpio.c          # GPIO peripheral emulation
 │   ├── timer.c         # Hardware timer emulation
-│   └── nvic.c          # NVIC interrupt controller
+│   ├── nvic.c          # NVIC interrupt controller
+│   ├── clocks.c        # Resets, Clocks, XOSC, PLLs, Watchdog
+│   └── adc.c           # ADC peripheral emulation
 ├── include/
 │   ├── emulator.h      # Core definitions, CPU state, memory layout
 │   ├── instructions.h  # Instruction handler prototypes
 │   ├── gpio.h          # GPIO register definitions
 │   ├── timer.h         # Timer register definitions
-│   └── nvic.h          # NVIC register definitions
+│   ├── nvic.h          # NVIC register definitions
+│   ├── clocks.h        # Clock-domain peripheral definitions
+│   └── adc.h           # ADC register definitions
 ├── tests/
-│   └── test_suite.c    # Unit test suite (52 tests, CTest integrated)
+│   └── test_suite.c    # Unit test suite (67 tests, CTest integrated)
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test
@@ -569,19 +586,18 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 
 ## Future Work
 
-### High Priority (Phase 2 - SDK Boot Path)
+### High Priority (Phase 3 - Run littleOS)
 
-1. **Resets Peripheral Stub** (0x4000C000): `reset_block()` / `unreset_block_wait()` - SDK init loops without this
-2. **Clocks Peripheral Stub** (0x40008000): CLK_REF, CLK_SYS, CLK_PERI configuration
-3. **XOSC/PLL Stubs**: Crystal oscillator and PLL lock status
-4. **ROM Function Table**: Stub implementations for SDK utility functions
+1. **USB CDC Stub**: Allow `stdio_init_all()` to complete without hanging
+2. **Flash Programming**: `flash_range_erase()` / `flash_range_program()` stubs for config persistence
+3. **ROM Function Table**: Stub implementations for SDK utility functions (`rom_func_lookup`, `_memcpy4`)
 
 ### Medium Priority
 
 1. **UART Rx**: Implement receive path for bidirectional serial communication
 2. **Cycle-Accurate Timing**: Replace 1:1 cycle-to-microsecond model with configurable ratio
 3. **Debugging Features**: Hardware breakpoints, watchpoints, GDB remote stub
-4. **Full Peripheral Emulation**: DMA controller, USB, PIO state machines
+4. **Full Peripheral Emulation**: DMA controller, PIO state machines
 
 ### Low Priority
 

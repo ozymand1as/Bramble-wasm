@@ -21,6 +21,8 @@
 #include "nvic.h"
 #include "timer.h"
 #include "gpio.h"
+#include "clocks.h"
+#include "adc.h"
 
 /* ========================================================================
  * Minimal Test Framework
@@ -1121,6 +1123,247 @@ TEST(test_scb_vtor_write) {
 }
 
 /* ========================================================================
+ * Phase 2: Resets Peripheral Tests
+ * ======================================================================== */
+
+TEST(test_resets_power_on_state) {
+    reset_cpu();
+    clocks_init();
+
+    /* At power-on, all peripherals should be held in reset */
+    uint32_t reset_val = mem_read32(RESETS_RESET);
+    ASSERT_EQ(RESETS_ALL_MASK, reset_val, "Resets should hold all peripherals at power-on");
+
+    /* RESET_DONE should be 0 (nothing released yet) */
+    uint32_t done_val = mem_read32(RESETS_RESET_DONE);
+    ASSERT_EQ(0x0, done_val, "RESET_DONE should be 0 when all held in reset");
+
+    PASS();
+}
+
+TEST(test_resets_release_and_done) {
+    reset_cpu();
+    clocks_init();
+
+    /* Release all peripherals from reset */
+    mem_write32(RESETS_RESET, 0x0);
+
+    /* RESET_DONE should now show all done */
+    uint32_t done_val = mem_read32(RESETS_RESET_DONE);
+    ASSERT_EQ(RESETS_ALL_MASK, done_val, "RESET_DONE should be all-ones after releasing reset");
+
+    PASS();
+}
+
+TEST(test_resets_atomic_clear) {
+    reset_cpu();
+    clocks_init();
+
+    /* Use CLR alias (base + 0x3000) to release specific peripherals */
+    /* Clear bit 0 (UART) from reset register */
+    mem_write32(RESETS_BASE + 0x3000 + 0x00, 0x1);
+
+    /* RESET register should have bit 0 cleared */
+    uint32_t reset_val = mem_read32(RESETS_RESET);
+    ASSERT_EQ(RESETS_ALL_MASK & ~0x1, reset_val,
+              "CLR alias should clear bit 0 from reset register");
+
+    /* RESET_DONE bit 0 should now be set */
+    uint32_t done_val = mem_read32(RESETS_RESET_DONE);
+    ASSERT_TRUE((done_val & 0x1) != 0,
+                "RESET_DONE bit 0 should be set after releasing from reset");
+
+    PASS();
+}
+
+/* ========================================================================
+ * Phase 2: Clocks Peripheral Tests
+ * ======================================================================== */
+
+TEST(test_clocks_selected_always_set) {
+    reset_cpu();
+    clocks_init();
+
+    /* CLK_SYS_SELECTED should always return non-zero */
+    uint32_t offset = CLK_SYS * 0x0C + CLK_SELECTED_OFFSET;
+    uint32_t sel = mem_read32(CLOCKS_BASE + offset);
+    ASSERT_TRUE(sel != 0, "CLK_SYS_SELECTED should be non-zero (clock stable)");
+
+    /* CLK_REF_SELECTED too */
+    offset = CLK_REF * 0x0C + CLK_SELECTED_OFFSET;
+    sel = mem_read32(CLOCKS_BASE + offset);
+    ASSERT_TRUE(sel != 0, "CLK_REF_SELECTED should be non-zero (clock stable)");
+
+    PASS();
+}
+
+TEST(test_clocks_ctrl_write_read) {
+    reset_cpu();
+    clocks_init();
+
+    /* Write to CLK_SYS CTRL */
+    uint32_t ctrl_addr = CLOCKS_BASE + CLK_SYS * 0x0C + CLK_CTRL_OFFSET;
+    mem_write32(ctrl_addr, 0x00000001);
+    uint32_t val = mem_read32(ctrl_addr);
+    ASSERT_EQ(0x00000001, val, "CLK_SYS CTRL should store written value");
+
+    PASS();
+}
+
+/* ========================================================================
+ * Phase 2: XOSC Tests
+ * ======================================================================== */
+
+TEST(test_xosc_status_stable) {
+    reset_cpu();
+    clocks_init();
+
+    uint32_t status = mem_read32(XOSC_STATUS);
+    ASSERT_TRUE((status & XOSC_STATUS_STABLE) != 0,
+                "XOSC STATUS should report STABLE");
+    ASSERT_TRUE((status & XOSC_STATUS_ENABLED) != 0,
+                "XOSC STATUS should report ENABLED");
+
+    PASS();
+}
+
+/* ========================================================================
+ * Phase 2: PLL Tests
+ * ======================================================================== */
+
+TEST(test_pll_sys_lock) {
+    reset_cpu();
+    clocks_init();
+
+    uint32_t cs = mem_read32(PLL_SYS_BASE + PLL_CS_OFFSET);
+    ASSERT_TRUE((cs & PLL_CS_LOCK) != 0,
+                "PLL_SYS CS should report LOCK=1");
+
+    PASS();
+}
+
+TEST(test_pll_usb_lock) {
+    reset_cpu();
+    clocks_init();
+
+    uint32_t cs = mem_read32(PLL_USB_BASE + PLL_CS_OFFSET);
+    ASSERT_TRUE((cs & PLL_CS_LOCK) != 0,
+                "PLL_USB CS should report LOCK=1");
+
+    PASS();
+}
+
+/* ========================================================================
+ * Phase 2: Watchdog Tests
+ * ======================================================================== */
+
+TEST(test_watchdog_reason_clean_boot) {
+    reset_cpu();
+    clocks_init();
+
+    uint32_t reason = mem_read32(WATCHDOG_REASON);
+    ASSERT_EQ(0, reason, "Watchdog REASON should be 0 (clean boot)");
+
+    PASS();
+}
+
+TEST(test_watchdog_scratch_registers) {
+    reset_cpu();
+    clocks_init();
+
+    /* Write and read back scratch registers */
+    mem_write32(WATCHDOG_SCRATCH0, 0xDEADBEEF);
+    uint32_t val = mem_read32(WATCHDOG_SCRATCH0);
+    ASSERT_EQ(0xDEADBEEF, val, "Watchdog SCRATCH0 should store written value");
+
+    mem_write32(WATCHDOG_SCRATCH4, 0xCAFEBABE);
+    val = mem_read32(WATCHDOG_SCRATCH4);
+    ASSERT_EQ(0xCAFEBABE, val, "Watchdog SCRATCH4 should store written value");
+
+    PASS();
+}
+
+TEST(test_watchdog_tick_enable) {
+    reset_cpu();
+    clocks_init();
+
+    /* Write tick with ENABLE bit set */
+    mem_write32(WATCHDOG_TICK, WATCHDOG_TICK_ENABLE | 12);
+    uint32_t val = mem_read32(WATCHDOG_TICK);
+    /* Should have ENABLE and RUNNING bits set */
+    ASSERT_TRUE((val & WATCHDOG_TICK_ENABLE) != 0,
+                "Watchdog TICK should have ENABLE set");
+    ASSERT_TRUE((val & WATCHDOG_TICK_RUNNING) != 0,
+                "Watchdog TICK should have RUNNING set when enabled");
+
+    PASS();
+}
+
+/* ========================================================================
+ * Phase 2: ADC Tests
+ * ======================================================================== */
+
+TEST(test_adc_cs_ready) {
+    reset_cpu();
+    adc_init();
+
+    /* CS should report READY */
+    uint32_t cs = mem_read32(ADC_CS);
+    ASSERT_TRUE((cs & ADC_CS_READY) != 0,
+                "ADC CS should report READY");
+
+    PASS();
+}
+
+TEST(test_adc_temp_sensor) {
+    reset_cpu();
+    adc_init();
+
+    /* Select temperature sensor channel (4) */
+    mem_write32(ADC_CS, ADC_CS_EN | ADC_CS_TS_EN | (4u << ADC_CS_AINSEL_SHIFT));
+
+    /* Read result - should be the default temp value */
+    uint32_t result = mem_read32(ADC_RESULT);
+    ASSERT_EQ(0x036C, result, "ADC temp sensor should return default ~27C value");
+
+    PASS();
+}
+
+TEST(test_adc_set_channel_value) {
+    reset_cpu();
+    adc_init();
+
+    /* Set channel 0 to a known value */
+    adc_set_channel_value(0, 0x0ABC);
+
+    /* Select channel 0 */
+    mem_write32(ADC_CS, ADC_CS_EN | (0u << ADC_CS_AINSEL_SHIFT));
+
+    uint32_t result = mem_read32(ADC_RESULT);
+    ASSERT_EQ(0x0ABC, result, "ADC should return injected channel value");
+
+    PASS();
+}
+
+/* ========================================================================
+ * Phase 2: UART Register Tests
+ * ======================================================================== */
+
+TEST(test_uart_registers) {
+    reset_cpu();
+
+    /* Flag register should indicate TX empty, RX empty */
+    uint32_t fr = mem_read32(UART0_BASE + 0x018);
+    ASSERT_EQ(0x00000090, fr, "UART FR should have TXFE=1, RXFE=1");
+
+    /* Control register should indicate enabled */
+    uint32_t cr = mem_read32(UART0_BASE + 0x030);
+    ASSERT_TRUE((cr & 1) != 0, "UART CR should have UARTEN=1");
+
+    PASS();
+}
+
+/* ========================================================================
  * Main
  * ======================================================================== */
 
@@ -1135,6 +1378,8 @@ int main(void) {
     systick_init();
     timer_init();
     gpio_init();
+    clocks_init();
+    adc_init();
 
     /* PRIMASK Tests */
     printf("[PRIMASK]\n");
@@ -1242,6 +1487,49 @@ int main(void) {
     printf("[SCB Registers]\n");
     RUN_TEST(test_scb_shpr_registers);
     RUN_TEST(test_scb_vtor_write);
+    printf("\n");
+
+    /* Resets Peripheral Tests */
+    printf("[Resets Peripheral]\n");
+    RUN_TEST(test_resets_power_on_state);
+    RUN_TEST(test_resets_release_and_done);
+    RUN_TEST(test_resets_atomic_clear);
+    printf("\n");
+
+    /* Clocks Peripheral Tests */
+    printf("[Clocks Peripheral]\n");
+    RUN_TEST(test_clocks_selected_always_set);
+    RUN_TEST(test_clocks_ctrl_write_read);
+    printf("\n");
+
+    /* XOSC Tests */
+    printf("[XOSC]\n");
+    RUN_TEST(test_xosc_status_stable);
+    printf("\n");
+
+    /* PLL Tests */
+    printf("[PLL]\n");
+    RUN_TEST(test_pll_sys_lock);
+    RUN_TEST(test_pll_usb_lock);
+    printf("\n");
+
+    /* Watchdog Tests */
+    printf("[Watchdog]\n");
+    RUN_TEST(test_watchdog_reason_clean_boot);
+    RUN_TEST(test_watchdog_scratch_registers);
+    RUN_TEST(test_watchdog_tick_enable);
+    printf("\n");
+
+    /* ADC Tests */
+    printf("[ADC]\n");
+    RUN_TEST(test_adc_cs_ready);
+    RUN_TEST(test_adc_temp_sensor);
+    RUN_TEST(test_adc_set_channel_value);
+    printf("\n");
+
+    /* UART Register Tests */
+    printf("[UART Registers]\n");
+    RUN_TEST(test_uart_registers);
     printf("\n");
 
     /* Summary */

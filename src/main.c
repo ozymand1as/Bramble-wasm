@@ -19,6 +19,8 @@
 #include "gpio.h"
 #include "timer.h"
 #include "nvic.h"
+#include "clocks.h"
+#include "adc.h"
 
 
 int any_core_running(void);
@@ -72,8 +74,10 @@ int main(int argc, char **argv) {
      * Firmware Loading (auto-detect UF2 or ELF format)
      * ======================================================================== */
 
-    /* Initialize CPU first (sets up memory bus pointers) */
+    /* Initialize CPU and peripherals */
     cpu_init();
+    clocks_init();
+    adc_init();
 
     int loaded = 0;
     size_t path_len = strlen(firmware_path);

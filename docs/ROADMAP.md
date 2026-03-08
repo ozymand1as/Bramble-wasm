@@ -1,14 +1,14 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.6.0
+## Current State: v0.7.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | Instructions | ~75% | 65+ Thumb-1; 32-bit: BL, MSR, MRS, DSB/DMB/ISB |
 | Memory Map | ~55% | Flash + SRAM; shared RAM fixed; no ROM, no aliases |
-| Peripherals | ~20% | GPIO, Timer, NVIC+SysTick, UART Tx, SPI/I2C/PWM stubs |
+| Peripherals | ~40% | GPIO, Timer, NVIC+SysTick, UART, Resets, Clocks, XOSC, PLLs, Watchdog, ADC, SPI/I2C/PWM stubs |
 | Exceptions | ~70% | Entry/return, priority preemption, SysTick, PendSV |
-| Boot | ~30% | Vector table only; no ROM/boot2 simulation |
+| Boot | ~60% | Vector table + SDK boot peripherals; no ROM/boot2 simulation |
 
 ---
 
@@ -54,33 +54,45 @@ on M0+. The original roadmap incorrectly listed these.
 
 ---
 
-## Phase 2: SDK Boot Path (Run Pico SDK `hello_world`)
+## Phase 2: SDK Boot Path (Run Pico SDK `hello_world`) -- MOSTLY COMPLETE
 
-### 2.1 Resets Peripheral (0x4000C000) [CRITICAL]
-SDK calls `reset_block()` / `unreset_block_wait()` during init for every peripheral.
-Without this, SDK init loops forever waiting for peripheral to come out of reset.
-- RESET register: write 1 to hold peripheral in reset
-- RESET_DONE register: read 1 when peripheral is out of reset
-- Simplest impl: RESET_DONE always returns all-ones (everything ready)
+### 2.1 Resets Peripheral (0x4000C000) [COMPLETE]
+~~SDK calls `reset_block()` / `unreset_block_wait()` during init for every peripheral.~~
+- RESET register with full bitmask tracking
+- RESET_DONE = ~RESET (peripherals not held in reset are ready)
+- Atomic register aliases (SET/CLR/XOR) supported
 
-### 2.2 Clocks Peripheral (0x40008000) [CRITICAL]
-SDK configures clocks before anything else.
-- CLK_REF, CLK_SYS, CLK_PERI, CLK_USB, CLK_ADC, CLK_RTC
-- Each has CTRL, DIV, SELECTED registers
-- Stub: SELECTED returns non-zero (clock source selected), DIV returns 1:0
+### 2.2 Clocks Peripheral (0x40008000) [COMPLETE]
+~~SDK configures clocks before anything else.~~
+- 10 clock generators (GPOUT0-3, REF, SYS, PERI, USB, ADC, RTC)
+- Each with CTRL, DIV, SELECTED registers
+- SELECTED always returns non-zero (clock source stable)
+- FC0_STATUS returns DONE=1, FC0_RESULT returns 125MHz
+- Atomic register aliases supported
 
-### 2.3 XOSC (0x40024000) + PLL_SYS (0x40028000) [HIGH]
-SDK enables crystal oscillator, then configures PLL for 125MHz.
-- XOSC STATUS: return STABLE=1 (bit 31)
-- PLL: CS register return LOCK=1 (bit 31)
+### 2.3 XOSC (0x40024000) + PLLs (0x40028000/0x4002C000) [COMPLETE]
+~~SDK enables crystal oscillator, then configures PLL for 125MHz.~~
+- XOSC STATUS: STABLE=1 (bit 31) + ENABLED=1 (bit 12)
+- PLL_SYS and PLL_USB: CS.LOCK=1, PWR/FBDIV/PRIM writable
+- Atomic register aliases supported
 
-### 2.4 Watchdog (0x40058000) [MEDIUM]
-SDK configures watchdog tick for SysTick reference clock.
-- TICK register: stores tick divider
-- CTRL: enable/disable
-- Stub: accept writes, no actual watchdog reset
+### 2.4 Watchdog (0x40058000) [COMPLETE]
+~~SDK configures watchdog tick for SysTick reference clock.~~
+- CTRL, LOAD, REASON (always 0 = clean boot), TICK registers
+- 8 scratch registers (SCRATCH0-7) for persistent data
+- TICK returns RUNNING=1 when ENABLE set
 
-### 2.5 ROM Function Table [MEDIUM]
+### 2.5 ADC (0x4004C000) [COMPLETE - bonus]
+- 5 channels (4 GPIO + temperature sensor)
+- CS (with READY=1), RESULT, FIFO, DIV, interrupt registers
+- Temperature sensor channel defaults to ~27C
+- `adc_set_channel_value()` for test injection
+
+### 2.6 RP2040 Atomic Register Aliases [COMPLETE - bonus]
+- All new peripherals support SET (+0x2000), CLR (+0x3000), XOR (+0x1000) aliases
+- SDK `hw_set_bits()` / `hw_clear_bits()` work correctly
+
+### 2.7 ROM Function Table [PENDING]
 SDK calls ROM utility functions (memcpy, popcount, etc.) via table at 0x00000018.
 - Minimal ROM: provide function table pointer and stub implementations
 - Key functions: `rom_func_lookup()`, `_memcpy4`, `_memset4`
@@ -155,14 +167,15 @@ SDK calls ROM utility functions (memcpy, popcount, etc.) via table at 0x00000018
 | Task | Blocks SDK hello_world? | Effort | Impact | Status |
 |------|------------------------|--------|--------|--------|
 | ~~32-bit instructions (MSR/MRS/barriers)~~ | ~~YES~~ | ~~Medium~~ | ~~Critical~~ | DONE v0.6.0 |
-| Resets peripheral stub | YES | Small | Critical | Phase 2 |
-| Clocks peripheral stub | YES | Small | Critical | Phase 2 |
-| XOSC/PLL stubs | YES | Small | Critical | Phase 2 |
+| ~~Resets peripheral~~ | ~~YES~~ | ~~Small~~ | ~~Critical~~ | DONE v0.7.0 |
+| ~~Clocks peripheral~~ | ~~YES~~ | ~~Small~~ | ~~Critical~~ | DONE v0.7.0 |
+| ~~XOSC/PLL~~ | ~~YES~~ | ~~Small~~ | ~~Critical~~ | DONE v0.7.0 |
 | ~~SysTick timer~~ | ~~YES (sleep_ms)~~ | ~~Medium~~ | ~~Critical~~ | DONE v0.6.0 |
 | ~~Shared RAM fix~~ | ~~No~~ | ~~Small~~ | ~~High~~ | DONE v0.6.0 |
 | ~~NVIC preemption~~ | ~~No~~ | ~~Medium~~ | ~~High~~ | DONE v0.6.0 |
 | ~~MSR/MRS full impl~~ | ~~Maybe~~ | ~~Small~~ | ~~Medium~~ | DONE v0.6.0 |
-| Watchdog stub | Maybe | Small | Medium | Phase 2 |
+| ~~Watchdog~~ | ~~Maybe~~ | ~~Small~~ | ~~Medium~~ | DONE v0.7.0 |
+| ~~ADC~~ | ~~No~~ | ~~Small~~ | ~~Medium~~ | DONE v0.7.0 |
+| ROM function table | Some programs | Medium | Medium | Phase 2 (pending) |
 | UART Rx | No | Medium | Medium | Phase 3 |
 | DMA stub | Some programs | Medium | Medium | Phase 3 |
-| ROM function table | Some programs | Medium | Medium | Phase 2 |
