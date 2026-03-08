@@ -268,8 +268,8 @@ int main(int argc, char **argv) {
         }
 
         /* Safety limit: prevent infinite loops (disabled during GDB) */
-        if (!gdb_enabled && instruction_count > 10000000) {
-            printf("[Warning] Instruction limit reached (10M)\n");
+        if (!gdb_enabled && instruction_count > 1000000000) {
+            printf("[Warning] Instruction limit reached (1B)\n");
             break;
         }
     }
