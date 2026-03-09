@@ -35,6 +35,7 @@
 #include "pio.h"
 #include "gdb.h"
 #include "usb.h"
+#include "rtc.h"
 
 
 int any_core_running(void);
@@ -98,6 +99,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -gdb [port] Start GDB server (default port: %d)\n", GDB_DEFAULT_PORT);
         fprintf(stderr, "  -clock <MHz> Set CPU clock frequency (default: 1, real: 125)\n");
         fprintf(stderr, "  -no-boot2  Skip boot2 even if detected in firmware\n");
+        fprintf(stderr, "  -debug-mem Log unmapped peripheral accesses\n");
         return EXIT_FAILURE;
     }
 
@@ -133,6 +135,8 @@ int main(int argc, char **argv) {
             }
         } else if (strcmp(argv[i], "-no-boot2") == 0) {
             no_boot2 = 1;
+        } else if (strcmp(argv[i], "-debug-mem") == 0) {
+            mem_debug_unmapped = 1;
         }
     }
 
@@ -163,6 +167,7 @@ int main(int argc, char **argv) {
     clocks_init();
     adc_init();
     usb_init();
+    rtc_init();
 
     int loaded = 0;
     size_t path_len = strlen(firmware_path);
@@ -277,6 +282,23 @@ int main(int argc, char **argv) {
             printf(" FIFO0: %u messages, FIFO1: %u messages\n",
                    fifo[CORE0].count, fifo[CORE1].count);
             printf("\n");
+        }
+
+        /* Watchdog reboot: reset all cores and re-start from flash */
+        if (watchdog_reboot_pending) {
+            printf("[Watchdog] Reboot triggered\n");
+            watchdog_reboot_pending = 0;
+            clocks_state.wdog_ctrl &= ~(1u << 31);  /* Clear trigger bit */
+            dual_core_init();
+            nvic_init();
+            timer_init();
+            rom_init();
+            if (no_boot2 || !cpu_has_boot2()) {
+                cpu_reset_core(CORE0);
+            }
+            instruction_count = 0;
+            step_count = 0;
+            continue;
         }
 
         /* Safety limit: prevent infinite loops (disabled during GDB) */

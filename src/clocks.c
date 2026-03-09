@@ -6,6 +6,9 @@
 /* Global clock-domain peripheral state */
 clocks_state_t clocks_state;
 
+/* Watchdog reboot flag - checked by main loop */
+int watchdog_reboot_pending = 0;
+
 /* Initialize all clock-domain peripherals */
 void clocks_init(void) {
     clocks_reset();
@@ -279,10 +282,16 @@ static uint32_t watchdog_read(uint32_t addr) {
 static void watchdog_write(uint32_t addr, uint32_t val, uint32_t alias) {
     uint32_t offset = addr & 0xFFF;
     switch (offset) {
-        case 0x00: /* CTRL */
-            clocks_state.wdog_ctrl = apply_alias_write(
+        case 0x00: /* CTRL */ {
+            uint32_t new_ctrl = apply_alias_write(
                 clocks_state.wdog_ctrl, val, alias);
+            clocks_state.wdog_ctrl = new_ctrl;
+            /* Bit 31 = TRIGGER: request system reboot */
+            if (new_ctrl & (1u << 31)) {
+                watchdog_reboot_pending = 1;
+            }
             break;
+        }
         case 0x04: /* LOAD */
             clocks_state.wdog_load = val; /* Reload value, always direct write */
             break;

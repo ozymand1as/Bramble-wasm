@@ -15,6 +15,7 @@
 #include "dma.h"
 #include "pio.h"
 #include "usb.h"
+#include "rtc.h"
 
 /* ========================================================================
  * XIP Cache Control State (0x14000000)
@@ -40,6 +41,9 @@ static uint32_t xip_stream_ctr = 0;
 
 /* XIP SRAM: 16KB cache memory usable as SRAM */
 static uint8_t xip_sram[XIP_SRAM_SIZE];
+
+/* Debug logging for unmapped peripheral accesses */
+int mem_debug_unmapped = 0;  /* Set via -debug-mem flag */
 
 /* ========================================================================
  * XIP SSI State (0x18000000)
@@ -376,6 +380,16 @@ static int is_adc_addr(uint32_t addr) {
  * ======================================================================== */
 
 #define SIO_CPUID_OFFSET               0x00
+#define SIO_GPIO_IN_OFFSET             0x04
+#define SIO_GPIO_HI_IN_OFFSET          0x08
+#define SIO_GPIO_OUT_OFFSET            0x10
+#define SIO_GPIO_OUT_SET_OFFSET        0x14
+#define SIO_GPIO_OUT_CLR_OFFSET        0x18
+#define SIO_GPIO_OUT_XOR_OFFSET        0x1C
+#define SIO_GPIO_OE_OFFSET             0x20
+#define SIO_GPIO_OE_SET_OFFSET         0x24
+#define SIO_GPIO_OE_CLR_OFFSET         0x28
+#define SIO_GPIO_OE_XOR_OFFSET         0x2C
 #define SIO_FIFO_ST_OFFSET             0x50
 #define SIO_FIFO_WR_OFFSET             0x54
 #define SIO_FIFO_RD_OFFSET             0x58
@@ -387,6 +401,41 @@ static int is_adc_addr(uint32_t addr) {
 #define SIO_DIV_QUOTIENT_OFFSET        0x70
 #define SIO_DIV_REMAINDER_OFFSET       0x74
 #define SIO_DIV_CSR_OFFSET             0x78
+
+/* SIO Interpolators (2 per core) */
+#define SIO_INTERP0_ACCUM0             0x80
+#define SIO_INTERP0_ACCUM1             0x84
+#define SIO_INTERP0_BASE0              0x88
+#define SIO_INTERP0_BASE1              0x8C
+#define SIO_INTERP0_BASE2              0x90
+#define SIO_INTERP0_POP_LANE0          0x94
+#define SIO_INTERP0_POP_LANE1          0x98
+#define SIO_INTERP0_POP_FULL           0x9C
+#define SIO_INTERP0_PEEK_LANE0         0xA0
+#define SIO_INTERP0_PEEK_LANE1         0xA4
+#define SIO_INTERP0_PEEK_FULL          0xA8
+#define SIO_INTERP0_CTRL_LANE0         0xAC
+#define SIO_INTERP0_CTRL_LANE1         0xB0
+#define SIO_INTERP0_ACCUM0_ADD         0xB4
+#define SIO_INTERP0_ACCUM1_ADD         0xB8
+#define SIO_INTERP0_BASE_1AND0         0xBC
+
+#define SIO_INTERP1_ACCUM0             0xC0
+#define SIO_INTERP1_ACCUM1             0xC4
+#define SIO_INTERP1_BASE0              0xC8
+#define SIO_INTERP1_BASE1              0xCC
+#define SIO_INTERP1_BASE2              0xD0
+#define SIO_INTERP1_POP_LANE0          0xD4
+#define SIO_INTERP1_POP_LANE1          0xD8
+#define SIO_INTERP1_POP_FULL           0xDC
+#define SIO_INTERP1_PEEK_LANE0         0xE0
+#define SIO_INTERP1_PEEK_LANE1         0xE4
+#define SIO_INTERP1_PEEK_FULL          0xE8
+#define SIO_INTERP1_CTRL_LANE0         0xEC
+#define SIO_INTERP1_CTRL_LANE1         0xF0
+#define SIO_INTERP1_ACCUM0_ADD         0xF4
+#define SIO_INTERP1_ACCUM1_ADD         0xF8
+#define SIO_INTERP1_BASE_1AND0         0xFC
 
 #define SIO_FIFO_ST_ROE                (1u << 3)
 #define SIO_FIFO_ST_WOF                (1u << 2)
@@ -410,6 +459,135 @@ static sio_divider_state_t sio_dividers[NUM_CORES] = {
     [0] = { .csr = SIO_DIV_CSR_READY },
     [1] = { .csr = SIO_DIV_CSR_READY },
 };
+
+/* ========================================================================
+ * SIO Interpolator State
+ *
+ * Each core has 2 interpolators (INTERP0, INTERP1). Each interpolator has:
+ *   - 2 accumulators (ACCUM0, ACCUM1)
+ *   - 3 base values (BASE0, BASE1, BASE2)
+ *   - 2 control registers (CTRL_LANE0, CTRL_LANE1)
+ *
+ * Lane result = (ACCUM >> shift) & mask
+ * PEEK/POP operations read lane results; POP also adds BASE to ACCUM.
+ * ======================================================================== */
+
+/* Forward declaration (defined below in SIO section) */
+static inline int sio_current_core(void);
+
+typedef struct {
+    uint32_t accum0;
+    uint32_t accum1;
+    uint32_t base0;
+    uint32_t base1;
+    uint32_t base2;
+    uint32_t ctrl0;  /* CTRL_LANE0 */
+    uint32_t ctrl1;  /* CTRL_LANE1 */
+} interp_state_t;
+
+static interp_state_t sio_interp[NUM_CORES][2];
+
+/* Compute lane result: shift and mask the accumulator */
+static uint32_t interp_lane_result(interp_state_t *interp, int lane) {
+    uint32_t ctrl = lane ? interp->ctrl1 : interp->ctrl0;
+    uint32_t accum = lane ? interp->accum1 : interp->accum0;
+
+    uint32_t shift = ctrl & 0x1F;        /* bits [4:0] */
+    uint32_t mask_lsb = (ctrl >> 5) & 0x1F;  /* bits [9:5] */
+    uint32_t mask_msb = (ctrl >> 10) & 0x1F; /* bits [14:10] */
+    int sign_ext = (ctrl >> 15) & 1;     /* bit 15: SIGNED */
+
+    uint32_t val = accum >> shift;
+
+    /* Apply mask: bits from mask_lsb to mask_msb are kept */
+    if (mask_msb >= mask_lsb) {
+        uint32_t width = mask_msb - mask_lsb + 1;
+        uint32_t mask;
+        if (width >= 32) {
+            mask = 0xFFFFFFFF;
+        } else {
+            mask = ((1u << width) - 1) << mask_lsb;
+        }
+        val &= mask;
+
+        /* Sign extension from mask_msb */
+        if (sign_ext && (val & (1u << mask_msb))) {
+            val |= ~((1u << (mask_msb + 1)) - 1);
+        }
+    }
+
+    return val;
+}
+
+/* Compute FULL result: LANE0 + LANE1 + BASE2 (or LANE0 + BASE2 etc depending on CTRL) */
+static uint32_t interp_full_result(interp_state_t *interp) {
+    uint32_t lane0 = interp_lane_result(interp, 0);
+    uint32_t lane1 = interp_lane_result(interp, 1);
+    return interp->base2 + lane0 + lane1;
+}
+
+static uint32_t sio_interp_read(int interp_idx, uint32_t reg_offset) {
+    int core = sio_current_core();
+    interp_state_t *interp = &sio_interp[core][interp_idx];
+
+    switch (reg_offset) {
+    case 0x00: return interp->accum0;
+    case 0x04: return interp->accum1;
+    case 0x08: return interp->base0;
+    case 0x0C: return interp->base1;
+    case 0x10: return interp->base2;
+    case 0x14: /* POP_LANE0: read result then add base0 to accum0 */
+    {
+        uint32_t r = interp_lane_result(interp, 0);
+        interp->accum0 += interp->base0;
+        return r;
+    }
+    case 0x18: /* POP_LANE1 */
+    {
+        uint32_t r = interp_lane_result(interp, 1);
+        interp->accum1 += interp->base1;
+        return r;
+    }
+    case 0x1C: /* POP_FULL */
+    {
+        uint32_t r = interp_full_result(interp);
+        interp->accum0 += interp->base0;
+        interp->accum1 += interp->base1;
+        return r;
+    }
+    case 0x20: return interp_lane_result(interp, 0);  /* PEEK_LANE0 */
+    case 0x24: return interp_lane_result(interp, 1);  /* PEEK_LANE1 */
+    case 0x28: return interp_full_result(interp);      /* PEEK_FULL */
+    case 0x2C: return interp->ctrl0;
+    case 0x30: return interp->ctrl1;
+    case 0x34: return interp->accum0;  /* ACCUM0_ADD read = raw accum0 */
+    case 0x38: return interp->accum1;  /* ACCUM1_ADD read = raw accum1 */
+    case 0x3C: return interp->base0;   /* BASE_1AND0 read */
+    default: return 0;
+    }
+}
+
+static void sio_interp_write(int interp_idx, uint32_t reg_offset, uint32_t val) {
+    int core = sio_current_core();
+    interp_state_t *interp = &sio_interp[core][interp_idx];
+
+    switch (reg_offset) {
+    case 0x00: interp->accum0 = val; break;
+    case 0x04: interp->accum1 = val; break;
+    case 0x08: interp->base0 = val; break;
+    case 0x0C: interp->base1 = val; break;
+    case 0x10: interp->base2 = val; break;
+    case 0x2C: interp->ctrl0 = val; break;
+    case 0x30: interp->ctrl1 = val; break;
+    case 0x34: interp->accum0 += val; break;  /* ACCUM0_ADD */
+    case 0x38: interp->accum1 += val; break;  /* ACCUM1_ADD */
+    case 0x3C:  /* BASE_1AND0: write BASE0 (lower 16) and BASE1 (upper 16) */
+        interp->base0 = val & 0xFFFF;
+        interp->base1 = val >> 16;
+        break;
+    default: break;
+    }
+}
 
 static uint32_t sio_fifo_sticky[NUM_CORES] = {0};
 
@@ -546,6 +724,14 @@ static void sio_write32(uint32_t offset, uint32_t val) {
     int core_id = sio_current_core();
     int other_core = (core_id == CORE0) ? CORE1 : CORE0;
 
+    /* Interpolator writes (0x80-0xBF = INTERP0, 0xC0-0xFF = INTERP1) */
+    if (offset >= 0x80 && offset <= 0xFC) {
+        int interp_idx = (offset >= 0xC0) ? 1 : 0;
+        uint32_t reg = (offset - (interp_idx ? 0xC0 : 0x80));
+        sio_interp_write(interp_idx, reg, val);
+        return;
+    }
+
     switch (offset) {
     case SIO_FIFO_ST_OFFSET:
         sio_fifo_sticky[core_id] &= ~(val & (SIO_FIFO_ST_ROE | SIO_FIFO_ST_WOF));
@@ -574,6 +760,13 @@ static void sio_write32(uint32_t offset, uint32_t val) {
 static uint32_t sio_read32(uint32_t offset) {
     int core_id = sio_current_core();
     uint32_t val = 0;
+
+    /* Interpolator reads (0x80-0xBF = INTERP0, 0xC0-0xFF = INTERP1) */
+    if (offset >= 0x80 && offset <= 0xFC) {
+        int interp_idx = (offset >= 0xC0) ? 1 : 0;
+        uint32_t reg = (offset - (interp_idx ? 0xC0 : 0x80));
+        return sio_interp_read(interp_idx, reg);
+    }
 
     switch (offset) {
     case SIO_CPUID_OFFSET:
@@ -677,7 +870,7 @@ void mem_write32(uint32_t addr, uint32_t val) {
     }
 
     /* SIO core-local registers */
-    if (addr >= SIO_BASE && addr < SIO_BASE + 0x80) {
+    if (addr >= SIO_BASE && addr < SIO_BASE + 0x100) {
         sio_write32(addr - SIO_BASE, val);
         return;
     }
@@ -804,11 +997,36 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
-    /* Stub out other peripheral writes for now. */
-    if (addr >= 0x40000000 && addr < 0x50000000) return;   /* APB/AHB peripherals */
-    if (addr >= SIO_BASE     && addr < SIO_BASE + 0x1000) return;
+    /* RTC */
+    if (rtc_match(addr)) {
+        uint32_t alias = addr & 0x3000;
+        uint32_t off = addr & 0xFFF;
+        if (alias == 0x0000) {
+            rtc_write32(off, val);
+        } else if (alias == 0x2000) {
+            rtc_write32(off, rtc_read32(off) | val);
+        } else if (alias == 0x3000) {
+            rtc_write32(off, rtc_read32(off) & ~val);
+        } else {
+            rtc_write32(off, rtc_read32(off) ^ val);
+        }
+        return;
+    }
 
-    /* Any other region is currently treated as unmapped/no-op. */
+    /* Stub out other peripheral writes for now. */
+    if (addr >= 0x40000000 && addr < 0x50000000) {
+        if (mem_debug_unmapped)
+            fprintf(stderr, "[MEM] unmapped write32: 0x%08X = 0x%08X\n", addr, val);
+        return;
+    }
+    if (addr >= SIO_BASE && addr < SIO_BASE + 0x1000) {
+        if (mem_debug_unmapped)
+            fprintf(stderr, "[MEM] unmapped SIO write32: 0x%08X = 0x%08X\n", addr, val);
+        return;
+    }
+
+    if (mem_debug_unmapped)
+        fprintf(stderr, "[MEM] unmapped write32: 0x%08X = 0x%08X\n", addr, val);
 }
 
 void mem_write16(uint32_t addr, uint16_t val) {
@@ -976,7 +1194,7 @@ uint32_t mem_read32(uint32_t addr) {
     }
 
     /* SIO core-local registers */
-    if (addr >= SIO_BASE && addr < SIO_BASE + 0x80) {
+    if (addr >= SIO_BASE && addr < SIO_BASE + 0x100) {
         return sio_read32(addr - SIO_BASE);
     }
 
@@ -1045,11 +1263,25 @@ uint32_t mem_read32(uint32_t addr) {
         return usb_read32(addr);
     }
 
-    /* Stub peripheral reads: return 0 for now. */
-    if (addr >= SIO_BASE     && addr < SIO_BASE + 0x1000)   return 0x00000000;
-    if (addr >= 0x40000000   && addr < 0x50000000)          return 0x00000000;
+    /* RTC */
+    if (rtc_match(addr)) {
+        return rtc_read32(addr & 0xFFF);
+    }
 
-    /* Unmapped address space -> 0 */
+    /* Stub peripheral reads: return 0 for now. */
+    if (addr >= SIO_BASE && addr < SIO_BASE + 0x1000) {
+        if (mem_debug_unmapped)
+            fprintf(stderr, "[MEM] unmapped SIO read32: 0x%08X\n", addr);
+        return 0;
+    }
+    if (addr >= 0x40000000 && addr < 0x50000000) {
+        if (mem_debug_unmapped)
+            fprintf(stderr, "[MEM] unmapped read32: 0x%08X\n", addr);
+        return 0;
+    }
+
+    if (mem_debug_unmapped)
+        fprintf(stderr, "[MEM] unmapped read32: 0x%08X\n", addr);
     return 0;
 }
 

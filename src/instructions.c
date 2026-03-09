@@ -1111,12 +1111,14 @@ void instr_nop(uint16_t instr) {
 void instr_udf(uint16_t instr) {
     (void)instr;
     printf("[CPU] UDF (Undefined Instruction) at 0x%08X\n", cpu.r[15]);
-    cpu.r[15] = 0xFFFFFFFF;
+    /* Trigger HardFault instead of halting */
+    cpu_exception_entry(EXC_HARDFAULT);
     pc_updated = 1;
 }
 
 void instr_unimplemented(uint16_t instr) {
     printf("[CPU] 0x%08X: UNIMPLEMENTED 0x%04X\n", cpu.r[15], instr);
-    cpu.r[15] = 0xFFFFFFFF;
+    /* Trigger HardFault instead of halting */
+    cpu_exception_entry(EXC_HARDFAULT);
     pc_updated = 1;
 }

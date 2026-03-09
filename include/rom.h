@@ -34,6 +34,45 @@
 #define ROM_FUNC_FLASH_FLUSH_CACHE      ROM_TABLE_CODE('F', 'C')
 #define ROM_FUNC_FLASH_ENTER_CMD_XIP    ROM_TABLE_CODE('C', 'X')
 
+/* ROM data table codes */
+#define ROM_DATA_SOFT_FLOAT  ROM_TABLE_CODE('S', 'F')
+#define ROM_DATA_SOFT_DOUBLE ROM_TABLE_CODE('S', 'D')
+
+/* ROM float/double function stub address ranges.
+ * Each stub is 2 bytes (BX LR). The index within the range identifies
+ * the operation (fadd=0, fsub=1, fmul=2, ...).
+ * cpu_step intercepts execution at these addresses. */
+#define ROM_FLOAT_FUNC_BASE   0x0500
+#define ROM_FLOAT_FUNC_COUNT  20
+#define ROM_DOUBLE_FUNC_BASE  0x0540
+#define ROM_DOUBLE_FUNC_COUNT 20
+
+/* Float/double function indices (matches RP2040 ROM layout) */
+#define ROM_FLOAT_FADD        0
+#define ROM_FLOAT_FSUB        1
+#define ROM_FLOAT_FMUL        2
+#define ROM_FLOAT_FDIV        3
+#define ROM_FLOAT_DEPRECATED  4
+#define ROM_FLOAT_FSQRT       5
+#define ROM_FLOAT_FLOAT2INT   6
+#define ROM_FLOAT_FLOAT2FIX   7
+#define ROM_FLOAT_FLOAT2UINT  8
+#define ROM_FLOAT_FLOAT2UFIX  9
+#define ROM_FLOAT_INT2FLOAT   10
+#define ROM_FLOAT_FIX2FLOAT   11
+#define ROM_FLOAT_UINT2FLOAT  12
+#define ROM_FLOAT_UFIX2FLOAT  13
+#define ROM_FLOAT_FCOS        14
+#define ROM_FLOAT_FSIN        15
+#define ROM_FLOAT_FTAN        16
+#define ROM_FLOAT_UNUSED17    17
+#define ROM_FLOAT_FEXP        18
+#define ROM_FLOAT_FLN         19
+
+/* ROM flash function stub addresses */
+#define ROM_FLASH_RANGE_ERASE_ADDR   0x03B8
+#define ROM_FLASH_RANGE_PROGRAM_ADDR 0x03BC
+
 /* ROM image buffer */
 extern uint8_t rom_image[ROM_SIZE];
 
@@ -44,5 +83,8 @@ void rom_init(void);
 uint32_t rom_read32(uint32_t addr);
 uint16_t rom_read16(uint32_t addr);
 uint8_t  rom_read8(uint32_t addr);
+
+/* ROM function interception: returns 1 if PC was intercepted */
+int rom_intercept(uint32_t pc);
 
 #endif /* ROM_H */

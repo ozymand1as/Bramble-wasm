@@ -506,17 +506,28 @@ int cpu_is_halted(void) {
  * Single-Core Exception Handling
  * ======================================================================== */
 
+/* Exception nesting stack: tracks active exception chain for proper return */
+#define MAX_EXCEPTION_DEPTH 8
+static uint32_t exception_stack[MAX_EXCEPTION_DEPTH];
+static int exception_depth = 0;
+
 void cpu_exception_entry(uint32_t vector_num) {
     uint32_t vector_offset = vector_num * 4;
     uint32_t handler_addr = mem_read32(cpu.vtor + vector_offset);
 
     if (cpu.debug_enabled) {
-        printf("[CPU] Exception %u: PC=0x%08X VTOR=0x%08X -> Handler=0x%08X\n",
-               vector_num, cpu.r[15], cpu.vtor, handler_addr);
+        printf("[CPU] Exception %u: PC=0x%08X VTOR=0x%08X -> Handler=0x%08X (depth %d)\n",
+               vector_num, cpu.r[15], cpu.vtor, handler_addr, exception_depth);
     }
 
     if (vector_num < 32) {
         nvic_state.active_exceptions |= (1u << vector_num);
+    }
+
+    /* Push previous exception onto nesting stack */
+    if (exception_depth < MAX_EXCEPTION_DEPTH) {
+        exception_stack[exception_depth] = cpu.current_irq;
+        exception_depth++;
     }
 
     cpu.current_irq = vector_num;
@@ -603,12 +614,18 @@ void cpu_exception_return(uint32_t lr_value) {
                 nvic_state.active_exceptions &= ~(1u << vector_num);
             }
 
-            if (cpu.debug_enabled) {
-                printf("[CPU] Cleared active exception (vector %u), IABR=0x%X\n",
-                       vector_num, nvic_state.iabr);
+            /* Pop previous exception from nesting stack */
+            if (exception_depth > 0) {
+                exception_depth--;
+                cpu.current_irq = exception_stack[exception_depth];
+            } else {
+                cpu.current_irq = 0xFFFFFFFF;
             }
 
-            cpu.current_irq = 0xFFFFFFFF;
+            if (cpu.debug_enabled) {
+                printf("[CPU] Cleared active exception (vector %u), IABR=0x%X, depth=%d\n",
+                       vector_num, nvic_state.iabr, exception_depth);
+            }
         }
 
         if (cpu.debug_enabled) {
@@ -657,8 +674,24 @@ void cpu_step(void) {
     if (!(pc < ROM_SIZE ||
           (pc >= FLASH_BASE && pc < FLASH_BASE + FLASH_SIZE) ||
           (pc >= RAM_BASE && pc < RAM_TOP))) {
-        printf("[CPU] ERROR: PC out of bounds (0x%08X)\n", pc);
+        /* HardFault: PC out of executable range */
+        uint32_t handler = mem_read32(cpu.vtor + EXC_HARDFAULT * 4);
+        if (handler && handler != 0xFFFFFFFF) {
+            if (cpu.debug_enabled) {
+                printf("[CPU] HardFault: PC out of bounds (0x%08X) -> handler 0x%08X\n",
+                       pc, handler);
+            }
+            cpu_exception_entry(EXC_HARDFAULT);
+            return;
+        }
+        printf("[CPU] ERROR: PC out of bounds (0x%08X), no HardFault handler\n", pc);
         cpu.r[15] = 0xFFFFFFFF;
+        return;
+    }
+
+    /* ROM function interception (float/double/flash) */
+    if (pc < ROM_SIZE && rom_intercept(pc)) {
+        timing_tick(4);  /* ROM functions take ~4 cycles */
         return;
     }
 
@@ -1268,6 +1301,9 @@ int fifo_try_push(int core_id, uint32_t val) {
     fifo[core_id].messages[fifo[core_id].write_ptr] = val;
     fifo[core_id].write_ptr = (fifo[core_id].write_ptr + 1) % FIFO_DEPTH;
     fifo[core_id].count++;
+
+    /* Signal SIO IRQ for the receiving core */
+    nvic_signal_irq(core_id == CORE0 ? IRQ_SIO_IRQ_PROC0 : IRQ_SIO_IRQ_PROC1);
 
     return 1;
 }

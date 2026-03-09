@@ -1,6 +1,8 @@
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 #include "rom.h"
+#include "emulator.h"
 
 /* ROM image buffer */
 uint8_t rom_image[ROM_SIZE];
@@ -12,7 +14,7 @@ uint8_t rom_image[ROM_SIZE];
  *   0x0016: 16-bit pointer to data table (0x0180)
  *   0x0018: 16-bit pointer to lookup function (0x0201, Thumb bit set)
  *   0x0100: Function table entries [16-bit code, 16-bit func_ptr] ...
- *   0x0180: Data table (empty, end marker)
+ *   0x0180: Data table entries [16-bit code, 16-bit data_ptr] ...
  *   0x0200: Lookup function (Thumb code)
  *   0x0300: memcpy (Thumb code)
  *   0x0320: memset (Thumb code)
@@ -20,6 +22,11 @@ uint8_t rom_image[ROM_SIZE];
  *   0x0360: clz32 (Thumb code)
  *   0x0380: ctz32 (Thumb code)
  *   0x03A0: reverse32 stub (returns 0)
+ *   0x03B0: Flash function stubs
+ *   0x0400: soft_float_table (array of 16-bit function pointers)
+ *   0x0440: soft_double_table (array of 16-bit function pointers)
+ *   0x0500: Float function stubs (BX LR, intercepted by cpu_step)
+ *   0x0540: Double function stubs (BX LR, intercepted by cpu_step)
  */
 
 /* Helper: write a 16-bit value at a ROM offset (little-endian) */
@@ -62,22 +69,7 @@ static void rom_place_lookup_fn(void) {
     rom_write16(0x0214, 0x4770);  /* bx lr */
 }
 
-/* memcpy at 0x0300: r0=dst, r1=src, r2=count (bytes). Returns r0=dst.
- *
- * 0x0300: push {r4, lr}
- * 0x0302: movs r3, r0           ; save dst for return
- * 0x0304: cmp  r2, #0
- * 0x0306: ble  done             ; -> 0x0314
- * loop:
- * 0x0308: ldrb r4, [r1, #0]
- * 0x030A: strb r4, [r3, #0]
- * 0x030C: adds r3, #1
- * 0x030E: adds r1, #1
- * 0x0310: subs r2, #1
- * 0x0312: bgt  loop             ; -> 0x0308
- * done:
- * 0x0314: pop  {r4, pc}
- */
+/* memcpy at 0x0300: r0=dst, r1=src, r2=count (bytes). Returns r0=dst. */
 static void rom_place_memcpy(void) {
     rom_write16(0x0300, 0xB510);  /* push {r4, lr} */
     rom_write16(0x0302, 0x0003);  /* lsls r3, r0, #0 (movs r3, r0) */
@@ -92,19 +84,7 @@ static void rom_place_memcpy(void) {
     rom_write16(0x0314, 0xBD10);  /* pop {r4, pc} */
 }
 
-/* memset at 0x0320: r0=dst, r1=value, r2=count (bytes). Returns r0=dst.
- *
- * 0x0320: movs r3, r0           ; save dst
- * 0x0322: cmp  r2, #0
- * 0x0324: ble  done             ; -> 0x032E
- * loop:
- * 0x0326: strb r1, [r3, #0]
- * 0x0328: adds r3, #1
- * 0x032A: subs r2, #1
- * 0x032C: bgt  loop             ; -> 0x0326
- * done:
- * 0x032E: bx   lr
- */
+/* memset at 0x0320: r0=dst, r1=value, r2=count (bytes). Returns r0=dst. */
 static void rom_place_memset(void) {
     rom_write16(0x0320, 0x0003);  /* lsls r3, r0, #0 (movs r3, r0) */
     rom_write16(0x0322, 0x2A00);  /* cmp r2, #0 */
@@ -116,117 +96,100 @@ static void rom_place_memset(void) {
     rom_write16(0x032E, 0x4770);  /* bx lr */
 }
 
-/* popcount32 at 0x0340: r0=value, returns bit count in r0.
- * Uses Kernighan's algorithm: n &= (n-1) clears lowest set bit.
- *
- * 0x0340: movs r1, #0           ; count = 0
- * 0x0342: cmp  r0, #0
- * 0x0344: beq  done             ; -> 0x0350
- * loop:
- * 0x0346: movs r2, r0           ; r2 = n
- * 0x0348: subs r2, #1           ; r2 = n-1
- * 0x034A: ands r0, r2           ; n &= (n-1)
- * 0x034C: adds r1, #1           ; count++
- * 0x034E: b    check            ; -> 0x0342
- * done:
- * 0x0350: movs r0, r1           ; return count
- * 0x0352: bx   lr
- */
+/* popcount32 at 0x0340 */
 static void rom_place_popcount(void) {
-    rom_write16(0x0340, 0x2100);  /* movs r1, #0 */
-    rom_write16(0x0342, 0x2800);  /* cmp r0, #0 */
-    rom_write16(0x0344, 0xD004);  /* beq +4 -> 0x0350 */
-    rom_write16(0x0346, 0x0002);  /* lsls r2, r0, #0 (movs r2, r0) */
-    rom_write16(0x0348, 0x3A01);  /* subs r2, #1 */
-    rom_write16(0x034A, 0x4010);  /* ands r0, r2 */
-    rom_write16(0x034C, 0x3101);  /* adds r1, #1 */
-    rom_write16(0x034E, 0xE7F8);  /* b -8 -> 0x0342 */
-    rom_write16(0x0350, 0x0008);  /* lsls r0, r1, #0 (movs r0, r1) */
-    rom_write16(0x0352, 0x4770);  /* bx lr */
+    rom_write16(0x0340, 0x2100);
+    rom_write16(0x0342, 0x2800);
+    rom_write16(0x0344, 0xD004);
+    rom_write16(0x0346, 0x0002);
+    rom_write16(0x0348, 0x3A01);
+    rom_write16(0x034A, 0x4010);
+    rom_write16(0x034C, 0x3101);
+    rom_write16(0x034E, 0xE7F8);
+    rom_write16(0x0350, 0x0008);
+    rom_write16(0x0352, 0x4770);
 }
 
-/* clz32 at 0x0360: r0=value, returns leading zero count in r0.
- *
- * 0x0360: movs r1, #0           ; count = 0
- * 0x0362: cmp  r0, #0
- * 0x0364: beq  ret32            ; -> 0x0372
- * loop:
- * 0x0366: lsls r0, r0, #1      ; shift left
- * 0x0368: bcs  done             ; -> 0x036E (carry = found MSB)
- * 0x036A: adds r1, #1           ; count++
- * 0x036C: b    loop             ; -> 0x0366
- * done:
- * 0x036E: movs r0, r1
- * 0x0370: bx   lr
- * ret32:
- * 0x0372: movs r0, #32
- * 0x0374: bx   lr
- */
+/* clz32 at 0x0360 */
 static void rom_place_clz(void) {
-    rom_write16(0x0360, 0x2100);  /* movs r1, #0 */
-    rom_write16(0x0362, 0x2800);  /* cmp r0, #0 */
-    rom_write16(0x0364, 0xD005);  /* beq +5 -> 0x0372 */
-    rom_write16(0x0366, 0x0040);  /* lsls r0, r0, #1 */
-    rom_write16(0x0368, 0xD201);  /* bcs +1 -> 0x036E */
-    rom_write16(0x036A, 0x3101);  /* adds r1, #1 */
-    rom_write16(0x036C, 0xE7FB);  /* b -5 -> 0x0366 */
-    rom_write16(0x036E, 0x0008);  /* lsls r0, r1, #0 (movs r0, r1) */
-    rom_write16(0x0370, 0x4770);  /* bx lr */
-    rom_write16(0x0372, 0x2020);  /* movs r0, #32 */
-    rom_write16(0x0374, 0x4770);  /* bx lr */
+    rom_write16(0x0360, 0x2100);
+    rom_write16(0x0362, 0x2800);
+    rom_write16(0x0364, 0xD005);
+    rom_write16(0x0366, 0x0040);
+    rom_write16(0x0368, 0xD201);
+    rom_write16(0x036A, 0x3101);
+    rom_write16(0x036C, 0xE7FB);
+    rom_write16(0x036E, 0x0008);
+    rom_write16(0x0370, 0x4770);
+    rom_write16(0x0372, 0x2020);
+    rom_write16(0x0374, 0x4770);
 }
 
-/* ctz32 at 0x0380: r0=value, returns trailing zero count in r0.
- *
- * 0x0380: movs r1, #0           ; count = 0
- * 0x0382: cmp  r0, #0
- * 0x0384: beq  ret32            ; -> 0x0396
- * loop:
- * 0x0386: movs r2, #1
- * 0x0388: tst  r0, r2           ; test bit 0
- * 0x038A: bne  done             ; -> 0x0392
- * 0x038C: lsrs r0, r0, #1
- * 0x038E: adds r1, #1
- * 0x0390: b    loop             ; -> 0x0386
- * done:
- * 0x0392: movs r0, r1
- * 0x0394: bx   lr
- * ret32:
- * 0x0396: movs r0, #32
- * 0x0398: bx   lr
- */
+/* ctz32 at 0x0380 */
 static void rom_place_ctz(void) {
-    rom_write16(0x0380, 0x2100);  /* movs r1, #0 */
-    rom_write16(0x0382, 0x2800);  /* cmp r0, #0 */
-    rom_write16(0x0384, 0xD007);  /* beq +7 -> 0x0396 */
-    rom_write16(0x0386, 0x2201);  /* movs r2, #1 */
-    rom_write16(0x0388, 0x4210);  /* tst r0, r2 */
-    rom_write16(0x038A, 0xD102);  /* bne +2 -> 0x0392 */
-    rom_write16(0x038C, 0x0840);  /* lsrs r0, r0, #1 */
-    rom_write16(0x038E, 0x3101);  /* adds r1, #1 */
-    rom_write16(0x0390, 0xE7F9);  /* b -7 -> 0x0386 */
-    rom_write16(0x0392, 0x0008);  /* lsls r0, r1, #0 (movs r0, r1) */
-    rom_write16(0x0394, 0x4770);  /* bx lr */
-    rom_write16(0x0396, 0x2020);  /* movs r0, #32 */
-    rom_write16(0x0398, 0x4770);  /* bx lr */
+    rom_write16(0x0380, 0x2100);
+    rom_write16(0x0382, 0x2800);
+    rom_write16(0x0384, 0xD007);
+    rom_write16(0x0386, 0x2201);
+    rom_write16(0x0388, 0x4210);
+    rom_write16(0x038A, 0xD102);
+    rom_write16(0x038C, 0x0840);
+    rom_write16(0x038E, 0x3101);
+    rom_write16(0x0390, 0xE7F9);
+    rom_write16(0x0392, 0x0008);
+    rom_write16(0x0394, 0x4770);
+    rom_write16(0x0396, 0x2020);
+    rom_write16(0x0398, 0x4770);
 }
 
 /* reverse32 stub at 0x03A0: returns 0 (not commonly needed) */
 static void rom_place_reverse_stub(void) {
-    rom_write16(0x03A0, 0x2000);  /* movs r0, #0 */
-    rom_write16(0x03A2, 0x4770);  /* bx lr */
+    rom_write16(0x03A0, 0x2000);
+    rom_write16(0x03A2, 0x4770);
 }
 
-/* Flash function stubs: all just 'bx lr' (no-ops).
- * 0x03B0: connect_internal_flash
- * 0x03B4: flash_exit_xip
- * 0x03B8: flash_range_erase
- * 0x03BC: flash_range_program
- * 0x03C0: flash_flush_cache
- * 0x03C4: flash_enter_cmd_xip */
+/* Flash function stubs.
+ * connect_internal_flash, flash_exit_xip, flash_flush_cache,
+ * flash_enter_cmd_xip: just 'bx lr' (no-ops).
+ * flash_range_erase and flash_range_program: also 'bx lr' but
+ * intercepted by rom_intercept() to modify cpu.flash[]. */
 static void rom_place_flash_stubs(void) {
     for (uint32_t addr = 0x03B0; addr <= 0x03C4; addr += 4) {
         rom_write16(addr, 0x4770);  /* bx lr */
+    }
+}
+
+/* ========================================================================
+ * Soft-Float / Soft-Double Function Tables and Stubs
+ *
+ * The SDK looks up these tables via rom_data_lookup('SF'/'SD').
+ * Each table is an array of 16-bit function pointers in ROM.
+ * The actual function stubs are BX LR, but rom_intercept()
+ * catches execution at these addresses and performs the operation
+ * natively in C using host float/double.
+ * ======================================================================== */
+
+static void rom_place_float_double_tables(void) {
+    /* soft_float_table at 0x0400: array of 16-bit pointers */
+    for (int i = 0; i < ROM_FLOAT_FUNC_COUNT; i++) {
+        uint16_t addr = ROM_FLOAT_FUNC_BASE + (i * 2);
+        rom_write16(0x0400 + i * 2, addr | 1);  /* Thumb bit */
+    }
+
+    /* soft_double_table at 0x0440: array of 16-bit pointers */
+    for (int i = 0; i < ROM_DOUBLE_FUNC_COUNT; i++) {
+        uint16_t addr = ROM_DOUBLE_FUNC_BASE + (i * 2);
+        rom_write16(0x0440 + i * 2, addr | 1);  /* Thumb bit */
+    }
+
+    /* Place BX LR at each float stub address */
+    for (int i = 0; i < ROM_FLOAT_FUNC_COUNT; i++) {
+        rom_write16(ROM_FLOAT_FUNC_BASE + i * 2, 0x4770);
+    }
+
+    /* Place BX LR at each double stub address */
+    for (int i = 0; i < ROM_DOUBLE_FUNC_COUNT; i++) {
+        rom_write16(ROM_DOUBLE_FUNC_BASE + i * 2, 0x4770);
     }
 }
 
@@ -235,23 +198,14 @@ static void rom_place_flash_stubs(void) {
 static void rom_build_func_table(void) {
     uint32_t off = 0x0100;
 
-    /* memcpy (MC) -> 0x0300 */
     rom_write16(off, ROM_FUNC_MEMCPY);    rom_write16(off + 2, 0x0301); off += 4;
-    /* memcpy44 (C4) -> 0x0300 (same impl) */
     rom_write16(off, ROM_FUNC_MEMCPY44);  rom_write16(off + 2, 0x0301); off += 4;
-    /* memset (MS) -> 0x0320 */
     rom_write16(off, ROM_FUNC_MEMSET);    rom_write16(off + 2, 0x0321); off += 4;
-    /* memset4 (S4) -> 0x0320 (same impl) */
     rom_write16(off, ROM_FUNC_MEMSET4);   rom_write16(off + 2, 0x0321); off += 4;
-    /* popcount32 (P3) -> 0x0340 */
     rom_write16(off, ROM_FUNC_POPCOUNT32); rom_write16(off + 2, 0x0341); off += 4;
-    /* clz32 (L3) -> 0x0360 */
     rom_write16(off, ROM_FUNC_CLZ32);     rom_write16(off + 2, 0x0361); off += 4;
-    /* ctz32 (T3) -> 0x0380 */
     rom_write16(off, ROM_FUNC_CTZ32);     rom_write16(off + 2, 0x0381); off += 4;
-    /* reverse32 (R3) -> 0x03A0 */
     rom_write16(off, ROM_FUNC_REVERSE32); rom_write16(off + 2, 0x03A1); off += 4;
-    /* Flash functions (no-op stubs) */
     rom_write16(off, ROM_FUNC_CONNECT_INTERNAL_FLASH); rom_write16(off + 2, 0x03B1); off += 4;
     rom_write16(off, ROM_FUNC_FLASH_EXIT_XIP);         rom_write16(off + 2, 0x03B5); off += 4;
     rom_write16(off, ROM_FUNC_FLASH_RANGE_ERASE);      rom_write16(off + 2, 0x03B9); off += 4;
@@ -262,10 +216,16 @@ static void rom_build_func_table(void) {
     rom_write16(off, 0x0000);             rom_write16(off + 2, 0x0000);
 }
 
-/* Build data table at 0x0180 (empty for now) */
+/* Build data table at 0x0180 with soft_float and soft_double entries */
 static void rom_build_data_table(void) {
-    rom_write16(0x0180, 0x0000);  /* end marker */
-    rom_write16(0x0182, 0x0000);
+    uint32_t off = 0x0180;
+
+    /* soft_float_table ('SF') -> 0x0400 */
+    rom_write16(off, ROM_DATA_SOFT_FLOAT);  rom_write16(off + 2, 0x0400); off += 4;
+    /* soft_double_table ('SD') -> 0x0440 */
+    rom_write16(off, ROM_DATA_SOFT_DOUBLE); rom_write16(off + 2, 0x0440); off += 4;
+    /* End marker */
+    rom_write16(off, 0x0000);               rom_write16(off + 2, 0x0000);
 }
 
 /* Initialize ROM image */
@@ -278,14 +238,12 @@ void rom_init(void) {
     rom_image[0x12] = 0x01;
 
     /* Pointers at 0x14/0x16/0x18 */
-    rom_write16(ROM_FUNC_TABLE_PTR, 0x0100);   /* func_table at 0x0100 */
-    rom_write16(ROM_DATA_TABLE_PTR, 0x0180);   /* data_table at 0x0180 */
-    rom_write16(ROM_LOOKUP_FN_PTR,  0x0201);   /* lookup_fn at 0x0200 | Thumb bit */
+    rom_write16(ROM_FUNC_TABLE_PTR, 0x0100);
+    rom_write16(ROM_DATA_TABLE_PTR, 0x0180);
+    rom_write16(ROM_LOOKUP_FN_PTR,  0x0201);
 
-    /* Build function table */
+    /* Build tables */
     rom_build_func_table();
-
-    /* Build data table */
     rom_build_data_table();
 
     /* Place Thumb code stubs */
@@ -297,8 +255,249 @@ void rom_init(void) {
     rom_place_ctz();
     rom_place_reverse_stub();
     rom_place_flash_stubs();
+    rom_place_float_double_tables();
 
-    printf("[ROM] Initialized function table with 14 entries\n");
+    printf("[ROM] Initialized function table with 14 entries + float/double tables\n");
+}
+
+/* ========================================================================
+ * ROM Function Interception
+ *
+ * Called from cpu_step before executing an instruction at a ROM address.
+ * Handles: float/double operations (native C), flash erase/program.
+ * Returns 1 if intercepted (caller should skip normal execution).
+ * ======================================================================== */
+
+/* Helper: reinterpret uint32_t as float */
+static inline float u2f(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
+static inline uint32_t f2u(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
+
+/* Helper: reinterpret uint32_t pair as double */
+static inline double u2d(uint32_t lo, uint32_t hi) {
+    uint64_t bits = (uint64_t)hi << 32 | lo;
+    double d; memcpy(&d, &bits, 8); return d;
+}
+static inline void d2u(double d, uint32_t *lo, uint32_t *hi) {
+    uint64_t bits; memcpy(&bits, &d, 8);
+    *lo = (uint32_t)bits;
+    *hi = (uint32_t)(bits >> 32);
+}
+
+static int rom_intercept_float(int idx) {
+    float a, b, result;
+
+    switch (idx) {
+    case ROM_FLOAT_FADD:
+        a = u2f(cpu.r[0]); b = u2f(cpu.r[1]);
+        cpu.r[0] = f2u(a + b);
+        return 1;
+    case ROM_FLOAT_FSUB:
+        a = u2f(cpu.r[0]); b = u2f(cpu.r[1]);
+        cpu.r[0] = f2u(a - b);
+        return 1;
+    case ROM_FLOAT_FMUL:
+        a = u2f(cpu.r[0]); b = u2f(cpu.r[1]);
+        cpu.r[0] = f2u(a * b);
+        return 1;
+    case ROM_FLOAT_FDIV:
+        a = u2f(cpu.r[0]); b = u2f(cpu.r[1]);
+        cpu.r[0] = f2u(a / b);
+        return 1;
+    case ROM_FLOAT_FSQRT:
+        a = u2f(cpu.r[0]);
+        cpu.r[0] = f2u(sqrtf(a));
+        return 1;
+    case ROM_FLOAT_FLOAT2INT:
+        a = u2f(cpu.r[0]);
+        cpu.r[0] = (uint32_t)(int32_t)a;
+        return 1;
+    case ROM_FLOAT_FLOAT2FIX:
+        a = u2f(cpu.r[0]);
+        result = a * (float)(1 << cpu.r[1]);
+        cpu.r[0] = (uint32_t)(int32_t)result;
+        return 1;
+    case ROM_FLOAT_FLOAT2UINT:
+        a = u2f(cpu.r[0]);
+        cpu.r[0] = (a < 0) ? 0 : (uint32_t)a;
+        return 1;
+    case ROM_FLOAT_FLOAT2UFIX:
+        a = u2f(cpu.r[0]);
+        result = a * (float)(1 << cpu.r[1]);
+        cpu.r[0] = (result < 0) ? 0 : (uint32_t)result;
+        return 1;
+    case ROM_FLOAT_INT2FLOAT:
+        cpu.r[0] = f2u((float)(int32_t)cpu.r[0]);
+        return 1;
+    case ROM_FLOAT_FIX2FLOAT:
+        cpu.r[0] = f2u((float)(int32_t)cpu.r[0] / (float)(1 << cpu.r[1]));
+        return 1;
+    case ROM_FLOAT_UINT2FLOAT:
+        cpu.r[0] = f2u((float)cpu.r[0]);
+        return 1;
+    case ROM_FLOAT_UFIX2FLOAT:
+        cpu.r[0] = f2u((float)cpu.r[0] / (float)(1 << cpu.r[1]));
+        return 1;
+    case ROM_FLOAT_FCOS:
+        cpu.r[0] = f2u(cosf(u2f(cpu.r[0])));
+        return 1;
+    case ROM_FLOAT_FSIN:
+        cpu.r[0] = f2u(sinf(u2f(cpu.r[0])));
+        return 1;
+    case ROM_FLOAT_FTAN:
+        cpu.r[0] = f2u(tanf(u2f(cpu.r[0])));
+        return 1;
+    case ROM_FLOAT_FEXP:
+        cpu.r[0] = f2u(expf(u2f(cpu.r[0])));
+        return 1;
+    case ROM_FLOAT_FLN:
+        cpu.r[0] = f2u(logf(u2f(cpu.r[0])));
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int rom_intercept_double(int idx) {
+    double a, b, result;
+
+    switch (idx) {
+    case ROM_FLOAT_FADD:
+        a = u2d(cpu.r[0], cpu.r[1]); b = u2d(cpu.r[2], cpu.r[3]);
+        d2u(a + b, &cpu.r[0], &cpu.r[1]);
+        return 1;
+    case ROM_FLOAT_FSUB:
+        a = u2d(cpu.r[0], cpu.r[1]); b = u2d(cpu.r[2], cpu.r[3]);
+        d2u(a - b, &cpu.r[0], &cpu.r[1]);
+        return 1;
+    case ROM_FLOAT_FMUL:
+        a = u2d(cpu.r[0], cpu.r[1]); b = u2d(cpu.r[2], cpu.r[3]);
+        d2u(a * b, &cpu.r[0], &cpu.r[1]);
+        return 1;
+    case ROM_FLOAT_FDIV:
+        a = u2d(cpu.r[0], cpu.r[1]); b = u2d(cpu.r[2], cpu.r[3]);
+        d2u(a / b, &cpu.r[0], &cpu.r[1]);
+        return 1;
+    case ROM_FLOAT_FSQRT:
+        a = u2d(cpu.r[0], cpu.r[1]);
+        d2u(sqrt(a), &cpu.r[0], &cpu.r[1]);
+        return 1;
+    case ROM_FLOAT_FLOAT2INT:
+        a = u2d(cpu.r[0], cpu.r[1]);
+        cpu.r[0] = (uint32_t)(int32_t)a;
+        return 1;
+    case ROM_FLOAT_FLOAT2FIX:
+        a = u2d(cpu.r[0], cpu.r[1]);
+        result = a * (double)(1u << cpu.r[2]);
+        cpu.r[0] = (uint32_t)(int32_t)result;
+        return 1;
+    case ROM_FLOAT_FLOAT2UINT:
+        a = u2d(cpu.r[0], cpu.r[1]);
+        cpu.r[0] = (a < 0) ? 0 : (uint32_t)a;
+        return 1;
+    case ROM_FLOAT_FLOAT2UFIX:
+        a = u2d(cpu.r[0], cpu.r[1]);
+        result = a * (double)(1u << cpu.r[2]);
+        cpu.r[0] = (result < 0) ? 0 : (uint32_t)result;
+        return 1;
+    case ROM_FLOAT_INT2FLOAT:
+        d2u((double)(int32_t)cpu.r[0], &cpu.r[0], &cpu.r[1]);
+        return 1;
+    case ROM_FLOAT_FIX2FLOAT:
+        d2u((double)(int32_t)cpu.r[0] / (double)(1u << cpu.r[1]),
+            &cpu.r[0], &cpu.r[1]);
+        return 1;
+    case ROM_FLOAT_UINT2FLOAT:
+        d2u((double)cpu.r[0], &cpu.r[0], &cpu.r[1]);
+        return 1;
+    case ROM_FLOAT_UFIX2FLOAT:
+        d2u((double)cpu.r[0] / (double)(1u << cpu.r[1]),
+            &cpu.r[0], &cpu.r[1]);
+        return 1;
+    case ROM_FLOAT_FCOS:
+        d2u(cos(u2d(cpu.r[0], cpu.r[1])), &cpu.r[0], &cpu.r[1]);
+        return 1;
+    case ROM_FLOAT_FSIN:
+        d2u(sin(u2d(cpu.r[0], cpu.r[1])), &cpu.r[0], &cpu.r[1]);
+        return 1;
+    case ROM_FLOAT_FTAN:
+        d2u(tan(u2d(cpu.r[0], cpu.r[1])), &cpu.r[0], &cpu.r[1]);
+        return 1;
+    case ROM_FLOAT_FEXP:
+        d2u(exp(u2d(cpu.r[0], cpu.r[1])), &cpu.r[0], &cpu.r[1]);
+        return 1;
+    case ROM_FLOAT_FLN:
+        d2u(log(u2d(cpu.r[0], cpu.r[1])), &cpu.r[0], &cpu.r[1]);
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int rom_intercept_flash(uint32_t pc) {
+    if (pc == ROM_FLASH_RANGE_ERASE_ADDR) {
+        /* flash_range_erase(uint32_t flash_offs, size_t count,
+         *                   uint32_t block_size, uint8_t block_cmd)
+         * R0 = flash offset, R1 = byte count */
+        uint32_t offs = cpu.r[0];
+        uint32_t count = cpu.r[1];
+        if (offs + count <= FLASH_SIZE) {
+            memset(&cpu.flash[offs], 0xFF, count);
+        }
+        return 1;
+    }
+
+    if (pc == ROM_FLASH_RANGE_PROGRAM_ADDR) {
+        /* flash_range_program(uint32_t flash_offs, const uint8_t *data,
+         *                     size_t count)
+         * R0 = flash offset, R1 = data pointer (in RAM), R2 = byte count */
+        uint32_t offs = cpu.r[0];
+        uint32_t src = cpu.r[1];
+        uint32_t count = cpu.r[2];
+        if (offs + count <= FLASH_SIZE) {
+            for (uint32_t i = 0; i < count; i++) {
+                cpu.flash[offs + i] = mem_read8(src + i);
+            }
+        }
+        return 1;
+    }
+
+    return 0;
+}
+
+int rom_intercept(uint32_t pc) {
+    /* Float function interception */
+    if (pc >= ROM_FLOAT_FUNC_BASE &&
+        pc < ROM_FLOAT_FUNC_BASE + ROM_FLOAT_FUNC_COUNT * 2) {
+        int idx = (pc - ROM_FLOAT_FUNC_BASE) / 2;
+        if (rom_intercept_float(idx)) {
+            /* Simulate BX LR */
+            cpu.r[15] = cpu.r[14] & ~1u;
+            cpu.step_count++;
+            return 1;
+        }
+    }
+
+    /* Double function interception */
+    if (pc >= ROM_DOUBLE_FUNC_BASE &&
+        pc < ROM_DOUBLE_FUNC_BASE + ROM_DOUBLE_FUNC_COUNT * 2) {
+        int idx = (pc - ROM_DOUBLE_FUNC_BASE) / 2;
+        if (rom_intercept_double(idx)) {
+            cpu.r[15] = cpu.r[14] & ~1u;
+            cpu.step_count++;
+            return 1;
+        }
+    }
+
+    /* Flash function interception */
+    if (pc == ROM_FLASH_RANGE_ERASE_ADDR ||
+        pc == ROM_FLASH_RANGE_PROGRAM_ADDR) {
+        if (rom_intercept_flash(pc)) {
+            /* Let the BX LR execute normally */
+            return 0;
+        }
+    }
+
+    return 0;
 }
 
 /* Read from ROM */

@@ -148,4 +148,7 @@ void clocks_write32(uint32_t addr, uint32_t val);
 
 extern clocks_state_t clocks_state;
 
+/* Watchdog reboot flag - set when CTRL.TRIGGER is written */
+extern int watchdog_reboot_pending;
+
 #endif /* CLOCKS_H */

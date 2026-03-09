@@ -35,10 +35,12 @@ set(SOURCES
     src/pio.c
     src/gdb.c
     src/usb.c
+    src/rtc.c
 )
 
 # Executable
 add_executable(bramble ${SOURCES})
+target_link_libraries(bramble m)  # math library for ROM soft-float
 
 # Optional: Enable testing
 enable_testing()
@@ -63,10 +65,12 @@ set(LIB_SOURCES
     src/dma.c
     src/pio.c
     src/usb.c
+    src/rtc.c
 )
 
 # Test executable
 add_executable(bramble_tests tests/test_suite.c ${LIB_SOURCES})
+target_link_libraries(bramble_tests m)
 add_test(NAME bramble_tests COMMAND bramble_tests)
 
 # Install target

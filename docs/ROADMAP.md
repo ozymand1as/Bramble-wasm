@@ -1,14 +1,14 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.17.0
+## Current State: v0.19.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | Instructions | ~75% | 65+ Thumb-1; 32-bit: BL, MSR, MRS, DSB/DMB/ISB |
-| Memory Map | ~90% | Flash + XIP aliases + XIP cache ctrl + XIP SRAM + XIP SSI + SRAM + SRAM alias + ROM (4KB) |
-| Peripherals | ~95% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx+stdin), SPI, I2C, PWM, DMA, PIO (full + clkdiv), Resets, Clocks, XOSC, PLLs, Watchdog, ADC (FIFO + round-robin), SIO divider, USB (disconnected stub with DPRAM) |
-| Exceptions | ~70% | Entry/return, priority preemption, SysTick, PendSV |
-| Boot | ~90% | Vector table + SDK boot peripherals + ROM function table + boot2 auto-detect |
+| Memory Map | ~95% | Flash + XIP aliases + XIP cache ctrl + XIP SRAM + XIP SSI + SRAM + SRAM alias + ROM (4KB) |
+| Peripherals | ~98% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx+stdin), SPI, I2C, PWM, DMA, PIO (full + clkdiv), Resets, Clocks, XOSC, PLLs, Watchdog (reboot), ADC (FIFO + round-robin), SIO divider + interpolators, USB (disconnected stub), RTC (stub) |
+| Exceptions | ~90% | Entry/return, priority preemption, SysTick, PendSV, HardFault, exception nesting |
+| Boot | ~95% | Vector table + SDK boot peripherals + ROM function table + boot2 auto-detect + ROM soft-float/double |
 
 ---
 
@@ -81,6 +81,7 @@ on M0+. The original roadmap incorrectly listed these.
 - CTRL, LOAD, REASON (always 0 = clean boot), TICK registers
 - 8 scratch registers (SCRATCH0-7) for persistent data
 - TICK returns RUNNING=1 when ENABLE set
+- **Reboot support** (v0.19.0): CTRL bit 31 (TRIGGER) resets entire emulator
 
 ### 2.5 ADC (0x4004C000) [COMPLETE - bonus]
 - 5 channels (4 GPIO + temperature sensor)
@@ -98,7 +99,9 @@ on M0+. The original roadmap incorrectly listed these.
 
 - 4KB ROM at 0x00000000 with RP2040-compatible layout (magic, pointers, function table)
 - Thumb code: `rom_table_lookup`, `memcpy`, `memset`, `popcount32`, `clz32`, `ctz32`
-- Flash function no-op stubs (connect, exit_xip, erase, program, flush, enter_xip)
+- Flash function stubs (connect, exit_xip, flush, enter_xip)
+- **Soft-float/double** (v0.19.0): ROM data tables ('SF'/'SD') with native C float/double interception
+- **Flash write** (v0.19.0): flash_range_erase/flash_range_program execute natively via ROM interception
 - USB controller stub (reads return 0, writes accepted silently)
 
 ---
@@ -140,6 +143,7 @@ on M0+. The original roadmap incorrectly listed these.
 - Immediate synchronous transfers: byte, halfword, word
 - INCR_READ / INCR_WRITE, CHAIN_TO, IRQ_QUIET
 - Global INTR (W1C), INTE0/1, INTF0/1, INTS0/1, MULTI_CHAN_TRIGGER
+- **IRQ delivery** (v0.19.0): DMA completion signals NVIC IRQ 11/12 when enabled
 - Atomic register aliases (SET/CLR/XOR)
 
 ### 3.6 ADC (0x4004C000) [COMPLETE]
@@ -173,6 +177,13 @@ on M0+. The original roadmap incorrectly listed these.
 - MAIN_CTRL, SIE_CTRL, USB_MUXING, USB_PWR writable with atomic aliases
 - SIE_STATUS always returns 0 (no VBUS, not connected)
 - SDK's stdio_usb_init() times out gracefully and falls back to UART
+
+### 3.9 RTC (0x4005C000) [COMPLETE - stub]
+
+- Register-level stub: CLKDIV_M1, SETUP_0/1, CTRL, IRQ registers
+- CTRL.ACTIVE reflects CTRL.ENABLE state
+- RTC_1/RTC_0 read back setup values (clock does not tick)
+- Atomic register aliases supported
 
 ---
 
@@ -213,6 +224,48 @@ on M0+. The original roadmap incorrectly listed these.
 - 16 software/hardware breakpoints, single-step, continue, vCont
 - Ctrl-C interrupt, detach, kill, thread queries
 - Usage: `./bramble firmware.uf2 -gdb` then `target remote :3333`
+
+### 4.6 SIO Interpolators (0xD0000080-0xD00000FF) [COMPLETE]
+
+- 2 interpolators per core (INTERP0, INTERP1) with lane-based accumulators
+- ACCUM0/1, BASE0/1/2, CTRL_LANE0/1 with shift/mask/sign-extend
+- PEEK (read-only lane results), POP (read + add base to accumulator)
+- FULL result = LANE0 + LANE1 + BASE2
+- BASE_1AND0 combined write
+
+### 4.7 HardFault + Exception Nesting [COMPLETE]
+
+- HardFault (vector 3) on bad PC, undefined instructions, unimplemented opcodes
+- Exception nesting stack (depth 8) replaces single current_irq tracking
+- Nested exceptions restore previous exception on return
+
+### 4.8 Peripheral IRQ Delivery [COMPLETE]
+
+- DMA completion → NVIC IRQ 11/12 (DMA_IRQ_0/1) when INTE0/1 enabled
+- SIO FIFO push → NVIC IRQ 15/16 (SIO_IRQ_PROC0/1) for receiving core
+- Timer alarm IRQ already implemented (IRQ 0-3)
+
+### 4.9 Debug Logging [COMPLETE]
+
+- `-debug-mem` flag logs unmapped peripheral read/write access to stderr
+- Helps diagnose firmware accessing unimplemented peripherals
+
+---
+
+## Phase 5: Remaining Gaps (MicroPython/CircuitPython target)
+
+### 5.1 Remaining for MicroPython
+- GPIO interrupt detection (edge/level → NVIC IRQ 13)
+- PIO IRQ → NVIC delivery
+- USB device enumeration (host-side emulation needed for full USB)
+- `machine.freq()` clock reconfiguration
+- Flash filesystem (littlefs over flash write)
+
+### 5.2 Nice to Have
+- RTC with actual time ticking
+- Dormant/sleep mode
+- Double-precision ROM functions (currently stubs but untested)
+- DMA pacing timers (cycle-based transfer throttling)
 
 ---
 

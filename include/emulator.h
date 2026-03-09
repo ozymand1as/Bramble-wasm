@@ -195,6 +195,9 @@ void mem_set_ram_ptr(uint8_t *ram, uint32_t base, uint32_t size);
 /* pc_updated flag: set by instruction handlers that modify PC */
 extern int pc_updated;
 
+/* Debug logging for unmapped peripheral accesses (-debug-mem flag) */
+extern int mem_debug_unmapped;
+
 /* ========================================================================
  * Memory Access Functions (Single-Core)
  * ======================================================================== */
