@@ -1,6 +1,6 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.19.0
+## Current State: v0.20.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
@@ -254,14 +254,35 @@ on M0+. The original roadmap incorrectly listed these.
 
 ## Phase 5: Remaining Gaps (MicroPython/CircuitPython target)
 
-### 5.1 Remaining for MicroPython
-- GPIO interrupt detection (edge/level → NVIC IRQ 13)
-- PIO IRQ → NVIC delivery
+### 5.1 GPIO Edge/Level Interrupt Detection [COMPLETE]
+
+- Automatic INTR bit setting when pin values change
+- Level interrupts: continuously asserted while pin is at configured level
+- Edge interrupts: latched on rising/falling transitions, cleared by W1C
+- Triggers NVIC IRQ 13 (IO_IRQ_BANK0) through INTE/INTF/INTS chain
+- `gpio_set_input_pin()` API for external input changes with event detection
+
+### 5.2 PIO INTR from FIFO Status [COMPLETE]
+
+- INTR register dynamically computed from hardware state:
+  - Bits [11:8]: SM IRQ flags
+  - Bits [7:4]: TX FIFO not full (per SM)
+  - Bits [3:0]: RX FIFO not empty (per SM)
+- INTS = (INTR | INTF) & INTE for both IRQ0 and IRQ1
+- IRQ check after each pio_step() cycle
+
+### 5.3 Dynamic Frequency Reporting [COMPLETE]
+
+- FC0_RESULT computed from PLL_SYS registers: `(12MHz * FBDIV) / (REFDIV * POSTDIV1 * POSTDIV2)`
+- `machine.freq()` returns actual configured frequency instead of hardcoded 125MHz
+- Defaults to 125MHz when PLL not yet configured
+
+### 5.4 Remaining for MicroPython
+
 - USB device enumeration (host-side emulation needed for full USB)
-- `machine.freq()` clock reconfiguration
 - Flash filesystem (littlefs over flash write)
 
-### 5.2 Nice to Have
+### 5.5 Nice to Have
 - RTC with actual time ticking
 - Dormant/sleep mode
 - Double-precision ROM functions (currently stubs but untested)

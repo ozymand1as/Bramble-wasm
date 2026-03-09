@@ -84,6 +84,7 @@ void gpio_write32(uint32_t addr, uint32_t val);
 /* GPIO pin operations */
 void gpio_set_pin(uint8_t pin, uint8_t value);
 uint8_t gpio_get_pin(uint8_t pin);
+void gpio_set_input_pin(uint8_t pin, uint8_t value);
 void gpio_set_direction(uint8_t pin, uint8_t output);
 void gpio_set_function(uint8_t pin, uint8_t func);
 

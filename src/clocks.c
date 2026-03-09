@@ -136,10 +136,37 @@ static uint32_t clocks_domain_read(uint32_t addr) {
             return 0;
         case 0x7C: /* CLK_SYS_RESUS_STATUS */
             return 0; /* No resuscitation */
+        case 0x80: /* FC0_REF_KHZ */
+        case 0x84: /* FC0_MIN_KHZ */
+        case 0x88: /* FC0_MAX_KHZ */
+        case 0x8C: /* FC0_DELAY */
+        case 0x90: /* FC0_INTERVAL */
+        case 0x94: /* FC0_SRC */
+            return 0;
         case 0x98: /* FC0_STATUS */
             return (1u << 4); /* DONE=1 */
-        case 0x9C: /* FC0_RESULT */
-            return (125000u << 5); /* 125 MHz as KHz in [29:5] */
+        case 0x9C: { /* FC0_RESULT */
+            /*
+             * Compute system frequency from PLL_SYS config:
+             * freq_khz = (XOSC_KHZ * FBDIV) / (REFDIV * POSTDIV1 * POSTDIV2)
+             * XOSC = 12MHz, REFDIV = CS[5:0], FBDIV = FBDIV_INT,
+             * POSTDIV1 = PRIM[18:16], POSTDIV2 = PRIM[14:12]
+             */
+            uint32_t fbdiv = clocks_state.pll_sys.fbdiv;
+            uint32_t refdiv = clocks_state.pll_sys.cs & 0x3F;
+            uint32_t postdiv1 = (clocks_state.pll_sys.prim >> 16) & 0x07;
+            uint32_t postdiv2 = (clocks_state.pll_sys.prim >> 12) & 0x07;
+            if (refdiv == 0) refdiv = 1;
+            if (postdiv1 == 0) postdiv1 = 1;
+            if (postdiv2 == 0) postdiv2 = 1;
+            uint32_t freq_khz;
+            if (fbdiv > 0) {
+                freq_khz = (12000u * fbdiv) / (refdiv * postdiv1 * postdiv2);
+            } else {
+                freq_khz = 125000u; /* Default 125MHz if PLL not configured */
+            }
+            return (freq_khz << 5); /* Result format: KHz in bits [29:5] */
+        }
         default:
             return 0;
     }

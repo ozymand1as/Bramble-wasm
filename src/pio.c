@@ -21,13 +21,36 @@ pio_block_t pio_state[PIO_NUM_BLOCKS];
 
 #include "nvic.h"
 
+/* Forward declare FIFO helpers needed by pio_compute_intr */
+static int fifo_full(pio_fifo_t *f);
+static int fifo_empty(pio_fifo_t *f);
+
+/*
+ * Compute PIO INTR (raw interrupt status) from hardware state.
+ * Bits [11:8]: SM3..SM0 IRQ flags
+ * Bits [7:4]:  SM3..SM0 TX FIFO not full
+ * Bits [3:0]:  SM3..SM0 RX FIFO not empty
+ */
+static uint32_t pio_compute_intr(pio_block_t *p) {
+    uint32_t intr = 0;
+    for (int sm = 0; sm < PIO_NUM_SM; sm++) {
+        if (p->irq & (1u << sm))
+            intr |= (1u << (8 + sm));
+        if (!fifo_full(&p->sm[sm].tx_fifo))
+            intr |= (1u << (4 + sm));
+        if (!fifo_empty(&p->sm[sm].rx_fifo))
+            intr |= (1u << sm);
+    }
+    return intr;
+}
+
 /* Check PIO interrupt conditions and signal NVIC */
 static void pio_check_irq(int pio_num) {
     pio_block_t *p = &pio_state[pio_num];
-    /* IRQ0: (INTR | INTF) & INTE - simplified: use irq flags + force */
-    if (p->irq0_intf & p->irq0_inte)
+    uint32_t intr = pio_compute_intr(p);
+    if ((intr | p->irq0_intf) & p->irq0_inte)
         nvic_signal_irq(pio_num == 0 ? IRQ_PIO0_IRQ_0 : IRQ_PIO1_IRQ_0);
-    if (p->irq1_intf & p->irq1_inte)
+    if ((intr | p->irq1_intf) & p->irq1_inte)
         nvic_signal_irq(pio_num == 0 ? IRQ_PIO0_IRQ_1 : IRQ_PIO1_IRQ_1);
 }
 
@@ -530,6 +553,8 @@ void pio_step(void) {
             s->addr = s->pc;  /* Update addr register (visible to CPU) */
             pio_sm_exec(b, sm, instr);
         }
+        /* Check IRQs after stepping all SMs in this block */
+        pio_check_irq(b);
     }
 }
 
@@ -637,19 +662,19 @@ uint32_t pio_read32(int pio_num, uint32_t offset) {
 
     /* Interrupt registers */
     case PIO_INTR:
-        return p->irq;  /* Raw interrupt flags */
+        return pio_compute_intr(p);
     case PIO_IRQ0_INTE:
         return p->irq0_inte;
     case PIO_IRQ0_INTF:
         return p->irq0_intf;
     case PIO_IRQ0_INTS:
-        return p->irq0_intf & p->irq0_inte;
+        return (pio_compute_intr(p) | p->irq0_intf) & p->irq0_inte;
     case PIO_IRQ1_INTE:
         return p->irq1_inte;
     case PIO_IRQ1_INTF:
         return p->irq1_intf;
     case PIO_IRQ1_INTS:
-        return p->irq1_intf & p->irq1_inte;
+        return (pio_compute_intr(p) | p->irq1_intf) & p->irq1_inte;
 
     default:
         break;

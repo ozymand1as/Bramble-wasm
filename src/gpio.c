@@ -41,6 +41,64 @@ static void gpio_check_irq(void) {
     }
 }
 
+/*
+ * Detect GPIO edge/level events by comparing old and new pin values.
+ * Sets INTR bits: per pin 4 bits = [edge_high, edge_low, level_high, level_low]
+ * Level interrupts are continuously asserted while the pin is at that level.
+ * Edge interrupts are latched (W1C) when a transition occurs.
+ */
+static void gpio_detect_events(uint32_t old_pins, uint32_t new_pins) {
+    /* Recompute level interrupts from current pin state */
+    for (int reg = 0; reg < 4; reg++) {
+        uint32_t level_bits = 0;
+        for (int bit = 0; bit < 8; bit++) {
+            int pin = reg * 8 + bit;
+            if (pin >= NUM_GPIO_PINS) break;
+            int val = (new_pins >> pin) & 1;
+            uint32_t shift = bit * 4;
+            /* Level low (bit 0): pin is 0 */
+            if (!val) level_bits |= (GPIO_INTR_LEVEL_LOW << shift);
+            /* Level high (bit 1): pin is 1 */
+            if (val)  level_bits |= (GPIO_INTR_LEVEL_HIGH << shift);
+        }
+        /* Level bits are not latched — recompute every time.
+         * Merge with existing edge bits (which are latched/W1C). */
+        uint32_t edge_mask = 0;
+        for (int bit = 0; bit < 8; bit++) {
+            uint32_t shift = bit * 4;
+            edge_mask |= ((GPIO_INTR_EDGE_LOW | GPIO_INTR_EDGE_HIGH) << shift);
+        }
+        gpio_state.intr[reg] = (gpio_state.intr[reg] & edge_mask) | level_bits;
+    }
+
+    /* Detect edges from changed pins */
+    uint32_t changed = old_pins ^ new_pins;
+    if (changed) {
+        for (int pin = 0; pin < NUM_GPIO_PINS; pin++) {
+            if (!(changed & (1u << pin))) continue;
+            int reg = pin / 8;
+            int bit = pin % 8;
+            uint32_t shift = bit * 4;
+            int new_val = (new_pins >> pin) & 1;
+            if (new_val) {
+                /* Rising edge */
+                gpio_state.intr[reg] |= (GPIO_INTR_EDGE_HIGH << shift);
+            } else {
+                /* Falling edge */
+                gpio_state.intr[reg] |= (GPIO_INTR_EDGE_LOW << shift);
+            }
+        }
+    }
+
+    gpio_check_irq();
+}
+
+/* Compute effective pin values (what SIO_GPIO_IN would return) */
+static uint32_t gpio_effective_pins(void) {
+    return (gpio_state.gpio_out & gpio_state.gpio_oe) |
+           (gpio_state.gpio_in & ~gpio_state.gpio_oe);
+}
+
 /* Read from GPIO register space */
 uint32_t gpio_read32(uint32_t addr) {
     /* SIO GPIO registers (fast access) */
@@ -118,6 +176,7 @@ uint32_t gpio_read32(uint32_t addr) {
 void gpio_write32(uint32_t addr, uint32_t val) {
     /* SIO GPIO registers (fast access with atomic operations) */
     if (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100) {
+        uint32_t old_pins = gpio_effective_pins();
         switch (addr) {
             case SIO_GPIO_OUT:
                 gpio_state.gpio_out = val;
@@ -155,6 +214,8 @@ void gpio_write32(uint32_t addr, uint32_t val) {
             case SIO_GPIO_IN:
                 break;
         }
+        /* Detect edge/level events from pin value changes */
+        gpio_detect_events(old_pins, gpio_effective_pins());
         return;
     }
 
@@ -249,11 +310,13 @@ void gpio_write32(uint32_t addr, uint32_t val) {
 void gpio_set_pin(uint8_t pin, uint8_t value) {
     if (pin >= NUM_GPIO_PINS) return;
 
+    uint32_t old_pins = gpio_effective_pins();
     if (value) {
-        gpio_state.gpio_out |= (1 << pin);
+        gpio_state.gpio_out |= (1u << pin);
     } else {
-        gpio_state.gpio_out &= ~(1 << pin);
+        gpio_state.gpio_out &= ~(1u << pin);
     }
+    gpio_detect_events(old_pins, gpio_effective_pins());
 }
 
 uint8_t gpio_get_pin(uint8_t pin) {
@@ -265,6 +328,18 @@ uint8_t gpio_get_pin(uint8_t pin) {
     }
     /* Otherwise return input value */
     return (gpio_state.gpio_in >> pin) & 1;
+}
+
+void gpio_set_input_pin(uint8_t pin, uint8_t value) {
+    if (pin >= NUM_GPIO_PINS) return;
+
+    uint32_t old_pins = gpio_effective_pins();
+    if (value) {
+        gpio_state.gpio_in |= (1u << pin);
+    } else {
+        gpio_state.gpio_in &= ~(1u << pin);
+    }
+    gpio_detect_events(old_pins, gpio_effective_pins());
 }
 
 void gpio_set_direction(uint8_t pin, uint8_t output) {
