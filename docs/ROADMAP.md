@@ -1,6 +1,6 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.22.0
+## Current State: v0.23.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|

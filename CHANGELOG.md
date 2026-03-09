@@ -1,5 +1,78 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.23.0] - 2026-03-09
+
+### Changed - Clean Output Separation + Robustness
+
+**Stdout/Stderr Separation**:
+
+- All emulator boot, init, loader, and status messages redirected to stderr
+- Firmware UART/USB CDC output is now the only thing on stdout
+- Enables clean piping: `./bramble firmware.uf2 -stdin > output.txt`
+- Affected files: main.c, cpu.c, rom.c, uf2.c, elf.c, gdb.c
+
+**Runtime Diagnostic Printf Gated Behind `-debug`**:
+
+- Timer alarm/disarm/interrupt messages gated behind `cpu.debug_enabled`
+- FIFO push/pop warnings gated behind `cpu.debug_enabled`
+- IT instruction, UDF, BKPT, unimplemented instruction messages gated
+- Eliminates all spurious stdout output during normal firmware execution
+
+**BKPT and Unhandled 32-bit Instructions Now HardFault**:
+
+- BKPT previously halted emulator (set PC=0xFFFFFFFF); now triggers HardFault exception
+- Unhandled 32-bit Thumb instructions previously halted; now trigger HardFault
+- Allows firmware HardFault handlers to catch these instead of crashing emulator
+
+**Interactive Mode Instruction Limit**:
+
+- 1B instruction safety limit now disabled when `-stdin` flag is active
+- Enables long-running firmware (MicroPython REPL, interactive shells) to run indefinitely
+- GDB mode already had this behavior; stdin mode now matches
+
+### Files Modified
+
+- `src/instructions.c` - BKPT→HardFault, gated printf for IT/UDF/BKPT/unimplemented
+- `src/cpu.c` - Gated FIFO warnings, EXC_RETURN error, PC-out-of-bounds; boot messages→stderr
+- `src/timer.c` - Gated all alarm/interrupt diagnostic printf
+- `src/main.c` - All printf→fprintf(stderr), stdin disables instruction limit
+- `src/rom.c`, `src/uf2.c`, `src/elf.c`, `src/gdb.c` - printf→fprintf(stderr)
+- `tests/test_suite.c` - 237 tests (unchanged)
+
+---
+
+## [0.22.0] - 2026-03-09
+
+### Added - SCB/NVIC Extensions + RTC Time Ticking
+
+**CPUID Register**:
+- `0xE000ED00` returns Cortex-M0+ identifier (0x410CC601)
+- Implementer=ARM, Variant=0, Architecture=M0+, PartNo=0xC60, Revision=1
+
+**NVIC IABR + Full IPR Range**:
+- NVIC_IABR (0xE000E300) readable, tracks active interrupts
+- IPR registers extended to IPR0-7 (covering all 26 RP2040 IRQs)
+
+**RTC Time Ticking**:
+- CTRL.LOAD strobe copies SETUP_0/1 into running time fields
+- Clock ticks seconds via `rtc_tick()` in timing path (microsecond accumulator)
+- Full calendar rollover: seconds→minutes→hours→days→months→years
+- Leap year support
+- RTC_1/RTC_0 return packed running time instead of raw setup values
+
+**NVIC Debug Output Gating**:
+- All NVIC printf output gated behind `cpu.debug_enabled`
+
+### Files Modified
+
+- `src/nvic.c` - CPUID, IABR, IPR0-7, debug printf gating
+- `src/rtc.c` - Complete rewrite: LOAD strobe, ticking, calendar rollover
+- `include/rtc.h` - Running time fields, tick_acc, rtc_tick() declaration
+- `src/cpu.c` - rtc_tick() in timing_tick()
+- `tests/test_suite.c` - 7 new tests (237 total)
+
+---
+
 ## [0.21.0] - 2026-03-09
 
 ### Added - USB Device Enumeration + Flash Persistence

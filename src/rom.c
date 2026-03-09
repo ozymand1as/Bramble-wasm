@@ -257,7 +257,7 @@ void rom_init(void) {
     rom_place_flash_stubs();
     rom_place_float_double_tables();
 
-    printf("[ROM] Initialized function table with 14 entries + float/double tables\n");
+    fprintf(stderr, "[ROM] Initialized function table with 14 entries + float/double tables\n");
 }
 
 /* ========================================================================

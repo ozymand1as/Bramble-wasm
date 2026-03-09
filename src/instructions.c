@@ -974,7 +974,8 @@ void instr_mrs(uint32_t instr) {
 
 void instr_it(uint16_t instr) {
     (void)instr;
-    printf("[CPU] IT instruction at 0x%08X (limited support)\n", cpu.r[15]);
+    if (cpu.debug_enabled)
+        printf("[CPU] IT instruction at 0x%08X (limited support)\n", cpu.r[15]);
 }
 
 void instr_dsb(uint32_t instr) { (void)instr; }
@@ -1088,19 +1089,20 @@ void instr_cpsie(uint16_t instr) {
 
 void instr_bkpt(uint16_t instr) {
     uint8_t imm = instr & 0xFF;
-    printf("[CPU] BKPT #%d at 0x%08X\n", imm, cpu.r[15]);
-    printf("[CPU] Program halted at breakpoint\n");
-    printf("Register State:");
-
-    for (int i = 0; i < 13; i++) {
-        printf("  R%-2d=0x%08X  ", i, cpu.r[i]);
-        if ((i + 1) % 4 == 0) printf("\n");
+    if (cpu.debug_enabled) {
+        printf("[CPU] BKPT #%d at 0x%08X\n", imm, cpu.r[15]);
+        printf("Register State:");
+        for (int i = 0; i < 13; i++) {
+            printf("  R%-2d=0x%08X  ", i, cpu.r[i]);
+            if ((i + 1) % 4 == 0) printf("\n");
+        }
+        printf("  R13(SP)=0x%08X  R14(LR)=0x%08X  R15(PC)=0x%08X\n",
+               cpu.r[13], cpu.r[14], cpu.r[15]);
+        printf("  XPSR=0x%08X\n", cpu.xpsr);
     }
-    printf("  R13(SP)=0x%08X  R14(LR)=0x%08X  R15(PC)=0x%08X\n",
-           cpu.r[13], cpu.r[14], cpu.r[15]);
-    printf("  XPSR=0x%08X\n", cpu.xpsr);
-
-    cpu.r[15] = 0xFFFFFFFF;
+    /* Trigger HardFault instead of halting */
+    (void)imm;
+    cpu_exception_entry(EXC_HARDFAULT);
     pc_updated = 1;
 }
 
@@ -1110,15 +1112,15 @@ void instr_nop(uint16_t instr) {
 
 void instr_udf(uint16_t instr) {
     (void)instr;
-    printf("[CPU] UDF (Undefined Instruction) at 0x%08X\n", cpu.r[15]);
-    /* Trigger HardFault instead of halting */
+    if (cpu.debug_enabled)
+        printf("[CPU] UDF (Undefined Instruction) at 0x%08X\n", cpu.r[15]);
     cpu_exception_entry(EXC_HARDFAULT);
     pc_updated = 1;
 }
 
 void instr_unimplemented(uint16_t instr) {
-    printf("[CPU] 0x%08X: UNIMPLEMENTED 0x%04X\n", cpu.r[15], instr);
-    /* Trigger HardFault instead of halting */
+    if (cpu.debug_enabled)
+        printf("[CPU] 0x%08X: UNIMPLEMENTED 0x%04X\n", cpu.r[15], instr);
     cpu_exception_entry(EXC_HARDFAULT);
     pc_updated = 1;
 }

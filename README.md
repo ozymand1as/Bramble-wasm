@@ -2,9 +2,9 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.21.0
+## Current Status: v0.23.0
 
-230 tests passing. Boots and runs Pico SDK firmware with full peripheral emulation, USB CDC enumeration, and flash filesystem persistence.
+237 tests passing. Boots and runs Pico SDK firmware with full peripheral emulation, USB CDC enumeration, and flash filesystem persistence. Clean stdout/stderr separation for firmware output piping.
 
 ### Coverage
 
@@ -18,7 +18,7 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 | Timing | Cycle-accurate | Configurable clock (`-clock 125`), ARMv6-M instruction costs |
 | Debugging | GDB RSP | Breakpoints, single-step, register/memory access (`-gdb`) |
 | Flash | Persistent | `-flash <path>` saves/loads 2MB flash image across runs |
-| Tests | 230 | CTest integrated, 50+ categories |
+| Tests | 237 | CTest integrated, 50+ categories |
 
 ### Peripherals
 
@@ -42,14 +42,15 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 | SIO | `0xD0000000` | Full (GPIO, FIFO, spinlocks, hardware divider, interpolators) |
 | ROM | `0x00000000` | Full (4KB, function table, soft-float/double, flash write) |
 | USB | `0x50110000` | Full (host enumeration, CDC data bridge, stdio_usb) |
+| RTC | `0x4005C000` | Full (LOAD strobe, calendar rollover, leap year, ticking) |
 | XIP Cache | `0x14000000` | Stub (always ready) + 16KB XIP SRAM |
 
 All peripherals support RP2040 atomic register aliases (SET/CLR/XOR).
 
 ### Known Limitations
 
-- **RTC**: Stub only (registers read/write, clock does not tick).
 - **Cycle timing**: Default 1 MHz (fast-forward). Use `-clock 125` for real RP2040 timing.
+- **I2C/SPI**: Register-level only (no protocol simulation for external devices).
 - See [ROADMAP](docs/ROADMAP.md) for detailed status.
 
 ## Building and Running
@@ -244,7 +245,7 @@ Bramble/
 │   ├── dma.c           # 12-channel DMA controller
 │   ├── pio.c           # Dual PIO block emulation (full instruction execution)
 │   ├── usb.c           # USB controller with host enumeration + CDC bridge
-│   ├── rtc.c           # RTC peripheral stub
+│   ├── rtc.c           # RTC peripheral (ticking, calendar, leap year)
 │   └── gdb.c           # GDB remote serial protocol stub
 ├── include/
 │   ├── emulator.h      # Core definitions, CPU state, memory layout
@@ -262,9 +263,10 @@ Bramble/
 │   ├── dma.h           # DMA controller register definitions
 │   ├── pio.h           # PIO register definitions
 │   ├── usb.h           # USB controller register definitions
+│   ├── rtc.h           # RTC register definitions
 │   └── gdb.h           # GDB RSP stub definitions
 ├── tests/
-│   └── test_suite.c    # Unit test suite (230+ tests, verbose, CTest integrated)
+│   └── test_suite.c    # Unit test suite (237 tests, verbose, CTest integrated)
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test
@@ -546,7 +548,7 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 ## Future Work
 
 1. **GDB Enhancements**: Watchpoints, Core 1 debugging, conditional breakpoints
-2. **RTC**: Actual time ticking (currently a stub)
+2. **I2C/SPI Protocol**: Master mode simulation for external device communication
 3. **Performance**: JIT compilation for hot loops, instruction caching
 
 ## Contributing

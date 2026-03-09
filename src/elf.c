@@ -61,7 +61,7 @@ int load_elf(const char *filename) {
     /* Read ELF header */
     elf32_ehdr_t ehdr;
     if (fread(&ehdr, 1, sizeof(ehdr), f) != sizeof(ehdr)) {
-        printf("[ELF] ERROR: Failed to read ELF header\n");
+        fprintf(stderr, "[ELF] ERROR: Failed to read ELF header\n");
         fclose(f);
         return 0;
     }
@@ -71,34 +71,34 @@ int load_elf(const char *filename) {
         ehdr.e_ident[1] != ELFMAG1 ||
         ehdr.e_ident[2] != ELFMAG2 ||
         ehdr.e_ident[3] != ELFMAG3) {
-        printf("[ELF] ERROR: Not a valid ELF file\n");
+        fprintf(stderr, "[ELF] ERROR: Not a valid ELF file\n");
         fclose(f);
         return 0;
     }
 
     /* Check 32-bit, little-endian, ARM */
     if (ehdr.e_ident[4] != ELFCLASS32) {
-        printf("[ELF] ERROR: Not a 32-bit ELF (class=%d)\n", ehdr.e_ident[4]);
+        fprintf(stderr, "[ELF] ERROR: Not a 32-bit ELF (class=%d)\n", ehdr.e_ident[4]);
         fclose(f);
         return 0;
     }
     if (ehdr.e_ident[5] != ELFDATA2LSB) {
-        printf("[ELF] ERROR: Not little-endian\n");
+        fprintf(stderr, "[ELF] ERROR: Not little-endian\n");
         fclose(f);
         return 0;
     }
     if (ehdr.e_machine != EM_ARM) {
-        printf("[ELF] ERROR: Not ARM architecture (machine=%d)\n", ehdr.e_machine);
+        fprintf(stderr, "[ELF] ERROR: Not ARM architecture (machine=%d)\n", ehdr.e_machine);
         fclose(f);
         return 0;
     }
 
-    printf("[ELF] Valid ELF32 ARM binary\n");
-    printf("[ELF] Entry point: 0x%08X\n", ehdr.e_entry);
-    printf("[ELF] Program headers: %d (offset 0x%X)\n", ehdr.e_phnum, ehdr.e_phoff);
+    fprintf(stderr, "[ELF] Valid ELF32 ARM binary\n");
+    fprintf(stderr, "[ELF] Entry point: 0x%08X\n", ehdr.e_entry);
+    fprintf(stderr, "[ELF] Program headers: %d (offset 0x%X)\n", ehdr.e_phnum, ehdr.e_phoff);
 
     if (ehdr.e_phnum == 0 || ehdr.e_phoff == 0) {
-        printf("[ELF] ERROR: No program headers\n");
+        fprintf(stderr, "[ELF] ERROR: No program headers\n");
         fclose(f);
         return 0;
     }
@@ -111,12 +111,12 @@ int load_elf(const char *filename) {
         long offset = (long)ehdr.e_phoff + (long)i * ehdr.e_phentsize;
 
         if (fseek(f, offset, SEEK_SET) != 0) {
-            printf("[ELF] ERROR: Failed to seek to program header %d\n", i);
+            fprintf(stderr, "[ELF] ERROR: Failed to seek to program header %d\n", i);
             continue;
         }
 
         if (fread(&phdr, 1, sizeof(phdr), f) != sizeof(phdr)) {
-            printf("[ELF] ERROR: Failed to read program header %d\n", i);
+            fprintf(stderr, "[ELF] ERROR: Failed to read program header %d\n", i);
             continue;
         }
 
@@ -125,7 +125,7 @@ int load_elf(const char *filename) {
             continue;
         }
 
-        printf("[ELF] LOAD segment %d: vaddr=0x%08X paddr=0x%08X filesz=%u memsz=%u\n",
+        fprintf(stderr, "[ELF] LOAD segment %d: vaddr=0x%08X paddr=0x%08X filesz=%u memsz=%u\n",
                i, phdr.p_vaddr, phdr.p_paddr, phdr.p_filesz, phdr.p_memsz);
 
         /* Load segments to their runtime virtual address.
@@ -154,17 +154,17 @@ int load_elf(const char *filename) {
             /* Load file data */
             if (phdr.p_filesz > 0) {
                 if (fseek(f, (long)phdr.p_offset, SEEK_SET) != 0) {
-                    printf("[ELF] ERROR: Failed to seek to segment data\n");
+                    fprintf(stderr, "[ELF] ERROR: Failed to seek to segment data\n");
                     continue;
                 }
 
                 size_t read = fread(&cpu.flash[flash_offset], 1, phdr.p_filesz, f);
                 if (read != phdr.p_filesz) {
-                    printf("[ELF] WARNING: Only read %zu of %u bytes\n", read, phdr.p_filesz);
+                    fprintf(stderr, "[ELF] WARNING: Only read %zu of %u bytes\n", read, phdr.p_filesz);
                 }
             }
 
-            printf("[ELF] Loaded %u bytes to flash[0x%08X]\n", phdr.p_filesz, flash_offset);
+            fprintf(stderr, "[ELF] Loaded %u bytes to flash[0x%08X]\n", phdr.p_filesz, flash_offset);
             segments_loaded++;
         }
         /* Load into RAM */
@@ -177,17 +177,17 @@ int load_elf(const char *filename) {
 
             if (phdr.p_filesz > 0) {
                 if (fseek(f, (long)phdr.p_offset, SEEK_SET) != 0) {
-                    printf("[ELF] ERROR: Failed to seek to segment data\n");
+                    fprintf(stderr, "[ELF] ERROR: Failed to seek to segment data\n");
                     continue;
                 }
 
                 size_t read = fread(&cpu.ram[ram_offset], 1, phdr.p_filesz, f);
                 if (read != phdr.p_filesz) {
-                    printf("[ELF] WARNING: Only read %zu of %u bytes\n", read, phdr.p_filesz);
+                    fprintf(stderr, "[ELF] WARNING: Only read %zu of %u bytes\n", read, phdr.p_filesz);
                 }
             }
 
-            printf("[ELF] Loaded %u bytes to RAM[0x%08X]\n", phdr.p_filesz, ram_offset);
+            fprintf(stderr, "[ELF] Loaded %u bytes to RAM[0x%08X]\n", phdr.p_filesz, ram_offset);
 
             if (phdr.p_paddr >= FLASH_BASE &&
                 phdr.p_paddr + phdr.p_filesz <= FLASH_BASE + FLASH_SIZE &&
@@ -195,16 +195,16 @@ int load_elf(const char *filename) {
                 uint32_t flash_offset = phdr.p_paddr - FLASH_BASE;
 
                 if (fseek(f, (long)phdr.p_offset, SEEK_SET) != 0) {
-                    printf("[ELF] ERROR: Failed to seek to RAM LMA data\n");
+                    fprintf(stderr, "[ELF] ERROR: Failed to seek to RAM LMA data\n");
                     continue;
                 }
 
                 size_t read = fread(&cpu.flash[flash_offset], 1, phdr.p_filesz, f);
                 if (read != phdr.p_filesz) {
-                    printf("[ELF] WARNING: Only mirrored %zu of %u bytes to flash LMA\n",
+                    fprintf(stderr, "[ELF] WARNING: Only mirrored %zu of %u bytes to flash LMA\n",
                            read, phdr.p_filesz);
                 } else {
-                    printf("[ELF] Mirrored %u RAM-init bytes to flash[0x%08X]\n",
+                    fprintf(stderr, "[ELF] Mirrored %u RAM-init bytes to flash[0x%08X]\n",
                            phdr.p_filesz, flash_offset);
                 }
             }
@@ -212,11 +212,11 @@ int load_elf(const char *filename) {
             segments_loaded++;
         }
         else {
-            printf("[ELF] WARNING: Segment target 0x%08X outside flash/RAM bounds, skipping\n", target);
+            fprintf(stderr, "[ELF] WARNING: Segment target 0x%08X outside flash/RAM bounds, skipping\n", target);
         }
     }
 
     fclose(f);
-    printf("[ELF] Load complete: %d segments loaded\n", segments_loaded);
+    fprintf(stderr, "[ELF] Load complete: %d segments loaded\n", segments_loaded);
     return (segments_loaded > 0);
 }

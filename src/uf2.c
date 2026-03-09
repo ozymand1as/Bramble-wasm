@@ -33,13 +33,13 @@ int load_uf2(const char *filename) {
     int blocks_loaded = 0;
     int blocks_total = 0;
 
-    printf("[LOADER] Starting UF2 load from: %s\n", filename);
+    fprintf(stderr, "[LOADER] Starting UF2 load from: %s\n", filename);
 
     while (fread(&block, 1, 512, f) == 512) {
         blocks_total++;
 
         /* DEBUG: Print block info */
-        printf("[LOADER] Block %d: magic0=0x%08X magic1=0x%08X target=0x%08X size=%u\n",
+        fprintf(stderr, "[LOADER] Block %d: magic0=0x%08X magic1=0x%08X target=0x%08X size=%u\n",
                blocks_total, block.magic_start0, block.magic_start1, 
                block.target_addr, block.payload_size);
 
@@ -49,7 +49,7 @@ int load_uf2(const char *filename) {
             memcpy(&w1, &block.data[4], 4);
             memcpy(&w2, &block.data[8], 4);
             memcpy(&w3, &block.data[12], 4);
-            printf("[LOADER] First 16 bytes of payload: %08X %08X %08X %08X\n",
+            fprintf(stderr, "[LOADER] First 16 bytes of payload: %08X %08X %08X %08X\n",
                    w0, w1, w2, w3);
         }
 
@@ -57,10 +57,10 @@ int load_uf2(const char *filename) {
         if (block.magic_start0 != UF2_MAGIC_START0 ||
             block.magic_start1 != UF2_MAGIC_START1 ||
             block.magic_end != UF2_MAGIC_END) {
-            printf("[LOADER] WARNING: Block %d has invalid magic numbers\n", blocks_total);
-            printf("[LOADER] Expected: 0x%08X 0x%08X 0x%08X\n",
+            fprintf(stderr, "[LOADER] WARNING: Block %d has invalid magic numbers\n", blocks_total);
+            fprintf(stderr, "[LOADER] Expected: 0x%08X 0x%08X 0x%08X\n",
                    UF2_MAGIC_START0, UF2_MAGIC_START1, UF2_MAGIC_END);
-            printf("[LOADER] Got:      0x%08X 0x%08X 0x%08X\n",
+            fprintf(stderr, "[LOADER] Got:      0x%08X 0x%08X 0x%08X\n",
                    block.magic_start0, block.magic_start1, block.magic_end);
             continue;
         }
@@ -68,7 +68,7 @@ int load_uf2(const char *filename) {
         /* Bounds check before writing */
         if (block.target_addr < FLASH_BASE ||
             block.target_addr + block.payload_size > FLASH_BASE + FLASH_SIZE) {
-            printf("[LOADER] WARNING: Block %d target 0x%08X out of Flash bounds\n",
+            fprintf(stderr, "[LOADER] WARNING: Block %d target 0x%08X out of Flash bounds\n",
                    blocks_total, block.target_addr);
             continue;
         }
@@ -82,18 +82,18 @@ int load_uf2(const char *filename) {
         if (block.payload_size >= 4) {
             uint32_t verify;
             memcpy(&verify, &cpu.flash[offset], 4);
-            printf("[LOADER] Wrote to flash[0x%08X] = 0x%08X\n", offset, verify);
+            fprintf(stderr, "[LOADER] Wrote to flash[0x%08X] = 0x%08X\n", offset, verify);
         }
     }
 
     fclose(f);
-    printf("[LOADER] Load complete: %d/%d valid blocks processed\n", blocks_loaded, blocks_total);
+    fprintf(stderr, "[LOADER] Load complete: %d/%d valid blocks processed\n", blocks_loaded, blocks_total);
 
     /* DEBUG: Show first words of flash */
     uint32_t flash0, flash4;
     memcpy(&flash0, &cpu.flash[0], 4);
     memcpy(&flash4, &cpu.flash[4], 4);
-    printf("[LOADER] Flash[0x00000000] = 0x%08X\n", flash0);
-    printf("[LOADER] Flash[0x00000004] = 0x%08X\n", flash4);
+    fprintf(stderr, "[LOADER] Flash[0x00000000] = 0x%08X\n", flash0);
+    fprintf(stderr, "[LOADER] Flash[0x00000004] = 0x%08X\n", flash4);
     return (blocks_loaded > 0);
 }

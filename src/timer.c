@@ -80,8 +80,9 @@ void timer_tick(uint32_t cycles) {
 
             /* DISARM the alarm to prevent re-firing when timer wraps */
             timer_state.armed &= ~(1 << i);
-            printf("[TIMER] Alarm %d FIRED at %" PRIu64 " us (lower32=0x%08x), DISARMED\n",
-                   i, timer_state.time_us, timer_low);
+            if (cpu.debug_enabled)
+                printf("[TIMER] Alarm %d FIRED at %" PRIu64 " us (lower32=0x%08x), DISARMED\n",
+                       i, timer_state.time_us, timer_low);
         }
     }
 }
@@ -185,7 +186,7 @@ void timer_write32(uint32_t addr, uint32_t val) {
     case TIMER_ARMED:
         /* Writing to ARMED disarms the specified alarms */
         timer_state.armed &= ~val;
-        if (val) {
+        if (val && cpu.debug_enabled) {
             printf("[TIMER] Disarmed alarms: 0x%X\n", val);
         }
         break;
@@ -195,7 +196,7 @@ void timer_write32(uint32_t addr, uint32_t val) {
          * This is how firmware clears the interrupt after handling it
          */
         timer_state.intr &= ~val;
-        if (val) {
+        if (val && cpu.debug_enabled) {
             printf("[TIMER] Cleared interrupt bits: 0x%X\n", val);
         }
         break;
@@ -203,13 +204,14 @@ void timer_write32(uint32_t addr, uint32_t val) {
     case TIMER_INTE:
         /* Interrupt enable register - controls which alarms generate interrupts */
         timer_state.inte = val & 0xF; /* Only 4 alarms */
-        printf("[TIMER] Interrupt enable set to: 0x%X\n", val);
+        if (cpu.debug_enabled)
+            printf("[TIMER] Interrupt enable set to: 0x%X\n", val);
         break;
 
     case TIMER_INTF:
         /* Interrupt force - set interrupt bits (for testing) */
         timer_state.intr |= (val & 0xF);
-        if (val) {
+        if (val && cpu.debug_enabled) {
             printf("[TIMER] Forced interrupt bits: 0x%X\n", val);
         }
         break;
@@ -217,7 +219,8 @@ void timer_write32(uint32_t addr, uint32_t val) {
     case TIMER_PAUSE:
         /* Pause/resume timer */
         timer_state.paused = val & 0x1;
-        printf("[TIMER] %s\n", timer_state.paused ? "PAUSED" : "RESUMED");
+        if (cpu.debug_enabled)
+            printf("[TIMER] %s\n", timer_state.paused ? "PAUSED" : "RESUMED");
         break;
 
     case TIMER_DBGPAUSE:

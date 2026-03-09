@@ -151,12 +151,12 @@ int main(int argc, char **argv) {
      * Initialization Phase
      * ======================================================================== */
 
-    printf("\n╔════════════════════════════════════════════════════════════╗\n");
-    printf("║       Bramble RP2040 Emulator - Dual-Core Mode           ║\n");
-    printf("╚════════════════════════════════════════════════════════════╝\n\n");
+    fprintf(stderr,"\n╔════════════════════════════════════════════════════════════╗\n");
+    fprintf(stderr,"║       Bramble RP2040 Emulator - Dual-Core Mode           ║\n");
+    fprintf(stderr,"╚════════════════════════════════════════════════════════════╝\n\n");
 
 
-    printf("[Init] Loading firmware: %s\n", firmware_path);
+    fprintf(stderr,"[Init] Loading firmware: %s\n", firmware_path);
 
     /* ========================================================================
      * Firmware Loading (auto-detect UF2 or ELF format)
@@ -191,7 +191,7 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    printf("[Init] Firmware loaded successfully\n");
+    fprintf(stderr,"[Init] Firmware loaded successfully\n");
 
     /* Flash persistence: restore non-firmware sectors from flash file */
     if (flash_path) {
@@ -218,17 +218,17 @@ int main(int argc, char **argv) {
                 }
             }
             fclose(ff);
-            printf("[Init] Flash file loaded: %s (non-firmware sectors restored)\n", flash_path);
+            fprintf(stderr,"[Init] Flash file loaded: %s (non-firmware sectors restored)\n", flash_path);
         }
     }
 
     /* Detect boot2 in firmware */
     if (!no_boot2 && cpu_has_boot2()) {
         cpu_set_boot2(1);
-        printf("[Init] Boot2 detected in firmware (first 256 bytes)\n");
+        fprintf(stderr,"[Init] Boot2 detected in firmware (first 256 bytes)\n");
     }
 
-    printf("[Init] Initializing dual-core RP2040 emulator...\n");
+    fprintf(stderr,"[Init] Initializing dual-core RP2040 emulator...\n");
     dual_core_init();
 
     /* ========================================================================
@@ -238,31 +238,31 @@ int main(int argc, char **argv) {
     /* Dual-core: dual_core_init() already handles vector table loading */
     if (debug_mode) {
         cpu_set_debug_core(CORE0, 1);
-        printf("[Init] Debug output enabled for Core 0\n");
+        fprintf(stderr,"[Init] Debug output enabled for Core 0\n");
     }
     if (debug1_mode) {
         cpu_set_debug_core(CORE1, 1);
-        printf("[Init] Debug output enabled for Core 1\n");
+        fprintf(stderr,"[Init] Debug output enabled for Core 1\n");
     }
 
     if (timing_config.cycles_per_us != 1) {
-        printf("[Init] Clock: %u MHz (%u cycles/µs)\n",
+        fprintf(stderr,"[Init] Clock: %u MHz (%u cycles/µs)\n",
                timing_config.cycles_per_us, timing_config.cycles_per_us);
     }
 
     if (stdin_enabled) {
         uart_stdin_init();
-        printf("[Init] Stdin polling enabled for UART0 Rx\n");
+        fprintf(stderr,"[Init] Stdin polling enabled for UART0 Rx\n");
     }
 
-    printf("[Boot] Starting Core 0 from flash...\n");
+    fprintf(stderr,"[Boot] Starting Core 0 from flash...\n");
     cpu_reset_core(CORE0);
-    printf("[Boot] Core 0 SP = 0x%08X\n", cores[CORE0].r[13]);
-    printf("[Boot] Core 0 PC = 0x%08X\n", cores[CORE0].r[15]);
+    fprintf(stderr,"[Boot] Core 0 SP = 0x%08X\n", cores[CORE0].r[13]);
+    fprintf(stderr,"[Boot] Core 0 PC = 0x%08X\n", cores[CORE0].r[15]);
     cpu_reset_core(CORE1);
-    printf("[Boot] Core 1 SP = 0x%08X\n", cores[CORE1].r[13]);
-    printf("[Boot] Core 1 PC = 0x%08X\n", cores[CORE1].r[15]);
-    printf("\n");
+    fprintf(stderr,"[Boot] Core 1 SP = 0x%08X\n", cores[CORE1].r[13]);
+    fprintf(stderr,"[Boot] Core 1 PC = 0x%08X\n", cores[CORE1].r[15]);
+    fprintf(stderr,"\n");
 
     /* GDB server initialization */
     if (gdb_enabled) {
@@ -278,10 +278,10 @@ int main(int argc, char **argv) {
      * Execution Phase
      * ======================================================================== */
 
-    printf("\n");
-    printf("═══════════════════════════════════════════════════════════\n");
-    printf("Executing...\n");
-    printf("═══════════════════════════════════════════════════════════\n\n");
+    fprintf(stderr,"\n");
+    fprintf(stderr,"═══════════════════════════════════════════════════════════\n");
+    fprintf(stderr,"Executing...\n");
+    fprintf(stderr,"═══════════════════════════════════════════════════════════\n\n");
 
     /* Dual-core execution loop */
     uint32_t instruction_count = 0;
@@ -311,21 +311,21 @@ int main(int argc, char **argv) {
         }
 
         if (show_status && (step_count % 1000 == 0)) {
-            printf("[Status] Step %u (Inst %u)\n", step_count, instruction_count);
-            printf(" Core 0: PC=0x%08X SP=0x%08X %s\n",
+            fprintf(stderr,"[Status] Step %u (Inst %u)\n", step_count, instruction_count);
+            fprintf(stderr," Core 0: PC=0x%08X SP=0x%08X %s\n",
                    cores[CORE0].r[15], cores[CORE0].r[13],
                    cores[CORE0].is_halted ? "(halted)" : "(running)");
-            printf(" Core 1: PC=0x%08X SP=0x%08X %s\n",
+            fprintf(stderr," Core 1: PC=0x%08X SP=0x%08X %s\n",
                    cores[CORE1].r[15], cores[CORE1].r[13],
                    cores[CORE1].is_halted ? "(halted)" : "(running)");
-            printf(" FIFO0: %u messages, FIFO1: %u messages\n",
+            fprintf(stderr," FIFO0: %u messages, FIFO1: %u messages\n",
                    fifo[CORE0].count, fifo[CORE1].count);
-            printf("\n");
+            fprintf(stderr,"\n");
         }
 
         /* Watchdog reboot: reset all cores and re-start from flash */
         if (watchdog_reboot_pending) {
-            printf("[Watchdog] Reboot triggered\n");
+            fprintf(stderr,"[Watchdog] Reboot triggered\n");
             watchdog_reboot_pending = 0;
             clocks_state.wdog_ctrl &= ~(1u << 31);  /* Clear trigger bit */
             dual_core_init();
@@ -340,9 +340,9 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        /* Safety limit: prevent infinite loops (disabled during GDB) */
-        if (!gdb_enabled && instruction_count > 1000000000) {
-            printf("[Warning] Instruction limit reached (1B)\n");
+        /* Safety limit: prevent infinite loops (disabled in interactive/GDB mode) */
+        if (!gdb_enabled && !stdin_enabled && instruction_count > 1000000000) {
+            fprintf(stderr,"[Warning] Instruction limit reached (1B)\n");
             break;
         }
     }
@@ -365,26 +365,26 @@ int main(int argc, char **argv) {
         if (ff) {
             fwrite(cpu.flash, 1, FLASH_SIZE, ff);
             fclose(ff);
-            printf("[Flash] Saved to %s\n", flash_path);
+            fprintf(stderr,"[Flash] Saved to %s\n", flash_path);
         } else {
             fprintf(stderr, "[Flash] Failed to save: %s\n", flash_path);
         }
     }
 
-    printf("\n");
-    printf("═══════════════════════════════════════════════════════════\n");
-    printf("Execution Complete\n");
-    printf("═══════════════════════════════════════════════════════════\n\n");
+    fprintf(stderr,"\n");
+    fprintf(stderr,"═══════════════════════════════════════════════════════════\n");
+    fprintf(stderr,"Execution Complete\n");
+    fprintf(stderr,"═══════════════════════════════════════════════════════════\n\n");
 
     dual_core_status();
 
-    printf("═══════════════════════════════════════════════════════════\n");
-    printf("Statistics:\n");
-    printf(" Total Instructions: %u\n", instruction_count);
-    printf(" Total Steps: %u\n", step_count);
-    printf(" Core 0 Steps: %u\n", cores[CORE0].step_count);
-    printf(" Core 1 Steps: %u\n", cores[CORE1].step_count);
-    printf("═══════════════════════════════════════════════════════════\n");
+    fprintf(stderr,"═══════════════════════════════════════════════════════════\n");
+    fprintf(stderr,"Statistics:\n");
+    fprintf(stderr," Total Instructions: %u\n", instruction_count);
+    fprintf(stderr," Total Steps: %u\n", step_count);
+    fprintf(stderr," Core 0 Steps: %u\n", cores[CORE0].step_count);
+    fprintf(stderr," Core 1 Steps: %u\n", cores[CORE1].step_count);
+    fprintf(stderr,"═══════════════════════════════════════════════════════════\n");
 
 
     return EXIT_SUCCESS;

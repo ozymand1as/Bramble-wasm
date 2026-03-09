@@ -353,7 +353,7 @@ int gdb_init(int port) {
         return -1;
     }
 
-    printf("[GDB] Listening on port %d... (connect with: target remote :%d)\n",
+    fprintf(stderr, "[GDB] Listening on port %d... (connect with: target remote :%d)\n",
            port, port);
     fflush(stdout);
 
@@ -367,7 +367,7 @@ int gdb_init(int port) {
         return -1;
     }
 
-    printf("[GDB] Client connected\n");
+    fprintf(stderr, "[GDB] Client connected\n");
     gdb.active = 1;
     return 0;
 }
@@ -402,7 +402,7 @@ int gdb_handle(void) {
         char pkt[4096];
         int len = gdb_recv_packet(pkt, sizeof(pkt));
         if (len < 0) {
-            printf("[GDB] Client disconnected\n");
+            fprintf(stderr, "[GDB] Client disconnected\n");
             gdb.active = 0;
             return -1;
         }
@@ -472,12 +472,12 @@ int gdb_handle(void) {
 
         case 'D':
             gdb_send_packet("OK");
-            printf("[GDB] Client detached\n");
+            fprintf(stderr, "[GDB] Client detached\n");
             gdb.active = 0;
             return -1;
 
         case 'k':
-            printf("[GDB] Kill request\n");
+            fprintf(stderr, "[GDB] Kill request\n");
             gdb.active = 0;
             return -1;
 

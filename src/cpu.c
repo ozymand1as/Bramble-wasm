@@ -452,14 +452,14 @@ void cpu_reset_from_flash(void) {
     uint32_t reset_vector = mem_read32(cpu.vtor + 0x04);
 
     if (initial_sp < RAM_BASE || initial_sp > RAM_BASE + RAM_SIZE) {
-        printf("[Boot] ERROR: Invalid SP 0x%08X (not in RAM 0x%08X-0x%08X)\n",
+        fprintf(stderr, "[Boot] ERROR: Invalid SP 0x%08X (not in RAM 0x%08X-0x%08X)\n",
                initial_sp, RAM_BASE, RAM_BASE + RAM_SIZE);
         cpu.r[15] = 0xFFFFFFFF;
         return;
     }
 
     if ((reset_vector & 0x1) == 0) {
-        printf("[Boot] ERROR: Invalid reset vector 0x%08X (Thumb bit not set)\n",
+        fprintf(stderr, "[Boot] ERROR: Invalid reset vector 0x%08X (Thumb bit not set)\n",
                reset_vector);
         cpu.r[15] = 0xFFFFFFFF;
         return;
@@ -470,11 +470,11 @@ void cpu_reset_from_flash(void) {
     cpu.r[14] = 0xFFFFFFFF;
     cpu.xpsr = 0x01000000;
 
-    printf("[Boot] Reset complete:\n");
-    printf("[Boot] VTOR = 0x%08X\n", cpu.vtor);
-    printf("[Boot] SP = 0x%08X\n", cpu.r[13]);
-    printf("[Boot] PC = 0x%08X\n", cpu.r[15]);
-    printf("[Boot] xPSR = 0x%08X\n", cpu.xpsr);
+    fprintf(stderr, "[Boot] Reset complete:\n");
+    fprintf(stderr, "[Boot] VTOR = 0x%08X\n", cpu.vtor);
+    fprintf(stderr, "[Boot] SP = 0x%08X\n", cpu.r[13]);
+    fprintf(stderr, "[Boot] PC = 0x%08X\n", cpu.r[15]);
+    fprintf(stderr, "[Boot] xPSR = 0x%08X\n", cpu.xpsr);
 }
 
 /* Allow execution from both flash and RAM */
@@ -634,8 +634,9 @@ void cpu_exception_return(uint32_t lr_value) {
         }
 
     } else {
-        printf("[CPU] ERROR: Unsupported EXC_RETURN mode 0x%X (expected 0x9 or 0x1)\n",
-               return_mode);
+        if (cpu.debug_enabled)
+            printf("[CPU] ERROR: Unsupported EXC_RETURN mode 0x%X (expected 0x9 or 0x1)\n",
+                   return_mode);
     }
 }
 
@@ -686,7 +687,8 @@ void cpu_step(void) {
             cpu_exception_entry(EXC_HARDFAULT);
             return;
         }
-        printf("[CPU] ERROR: PC out of bounds (0x%08X), no HardFault handler\n", pc);
+        if (cpu.debug_enabled)
+            printf("[CPU] ERROR: PC out of bounds (0x%08X), no HardFault handler\n", pc);
         cpu.r[15] = 0xFFFFFFFF;
         return;
     }
@@ -805,10 +807,11 @@ void cpu_step(void) {
                 return;
             }
 
-            /* Unhandled 32-bit instruction */
-            printf("[CPU] Unhandled 32-bit Thumb instr: upper=0x%04X lower=0x%04X @ PC=0x%08X\n",
-                   instr, instr2, pc);
-            cpu.r[15] = 0xFFFFFFFF;
+            /* Unhandled 32-bit instruction -> HardFault */
+            if (cpu.debug_enabled)
+                printf("[CPU] Unhandled 32-bit Thumb instr: upper=0x%04X lower=0x%04X @ PC=0x%08X\n",
+                       instr, instr2, pc);
+            cpu_exception_entry(EXC_HARDFAULT);
             return;
         }
     }
@@ -859,10 +862,10 @@ void dual_core_init(void) {
         cores[i].current_irq = 0xFFFFFFFF;
         cores[i].primask = 0;
 
-        printf("[CORE%d] Initialized (halted: %d)\n", i, cores[i].is_halted);
+        fprintf(stderr, "[CORE%d] Initialized (halted: %d)\n", i, cores[i].is_halted);
     }
 
-    printf("[Boot] Firmware in shared flash (%u bytes), SRAM shared across both cores (%u bytes)\n",
+    fprintf(stderr, "[Boot] Firmware in shared flash (%u bytes), SRAM shared across both cores (%u bytes)\n",
            FLASH_SIZE, RAM_SIZE);
 
     /* Read vector table from flash */
@@ -874,7 +877,7 @@ void dual_core_init(void) {
     cores[CORE0].r[15] = reset_vector & ~1;
 
     if (initial_sp != 0 || reset_vector != 0) {
-        printf("[Boot] Vector table loaded: SP=0x%08X, PC=0x%08X\n",
+        fprintf(stderr, "[Boot] Vector table loaded: SP=0x%08X, PC=0x%08X\n",
                initial_sp, reset_vector & ~1);
     }
 
@@ -1039,7 +1042,7 @@ void cpu_reset_core(int core_id) {
              * Use top of SRAM as initial SP (boot2 sets its own). */
             c->r[13] = RAM_BASE + RAM_SIZE;
             c->r[15] = FLASH_BASE;
-            printf("[Boot2] Starting boot2 from 0x%08X\n", FLASH_BASE);
+            fprintf(stderr, "[Boot2] Starting boot2 from 0x%08X\n", FLASH_BASE);
         } else {
             /* No boot2: read vector table directly from +0x100 */
             uint32_t vector_table = FLASH_BASE + 0x100;
@@ -1141,11 +1144,11 @@ int any_core_running(void) {
 }
 
 void dual_core_status(void) {
-    printf("[DUAL-CORE STATUS]\n");
+    fprintf(stderr, "[DUAL-CORE STATUS]\n");
     for (int i = 0; i < NUM_CORES; i++) {
-        printf("[CORE%d] Status: %s\n", i, cores[i].is_halted ? "HALTED" : "RUNNING");
-        printf("[CORE%d] PC=0x%08X SP=0x%08X\n", i, cores[i].r[15], cores[i].r[13]);
-        printf("[CORE%d] Step count: %u\n", i, cores[i].step_count);
+        fprintf(stderr, "[CORE%d] Status: %s\n", i, cores[i].is_halted ? "HALTED" : "RUNNING");
+        fprintf(stderr, "[CORE%d] PC=0x%08X SP=0x%08X\n", i, cores[i].r[15], cores[i].r[13]);
+        fprintf(stderr, "[CORE%d] Step count: %u\n", i, cores[i].step_count);
     }
 }
 
@@ -1255,7 +1258,8 @@ uint32_t fifo_pop(int core_id) {
     if (core_id >= NUM_CORES) return 0;
 
     if (fifo[core_id].count == 0) {
-        printf("[FIFO] WARNING: Pop on empty FIFO for core %d\n", core_id);
+        if (cpu.debug_enabled)
+            printf("[FIFO] WARNING: Pop on empty FIFO for core %d\n", core_id);
         return 0;
     }
 
@@ -1270,7 +1274,8 @@ void fifo_push(int core_id, uint32_t val) {
     if (core_id >= NUM_CORES) return;
 
     if (fifo[core_id].count >= FIFO_DEPTH) {
-        printf("[FIFO] WARNING: Push on full FIFO for core %d, dropping\n", core_id);
+        if (cpu.debug_enabled)
+            printf("[FIFO] WARNING: Push on full FIFO for core %d, dropping\n", core_id);
         return;
     }
 
