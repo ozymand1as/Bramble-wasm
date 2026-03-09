@@ -1,5 +1,150 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.21.0] - 2026-03-09
+
+### Added - USB Device Enumeration + Flash Persistence
+
+**USB Host Enumeration Simulation**:
+
+- Full USB host state machine simulating device enumeration:
+  - Bus reset → GET_DEVICE_DESCRIPTOR (8 bytes) → SET_ADDRESS
+  - GET_DEVICE_DESCRIPTOR (full) → GET_CONFIGURATION_DESCRIPTOR (short + full)
+  - SET_CONFIGURATION → CDC SET_LINE_CODING → SET_CONTROL_LINE_STATE (DTR+RTS)
+- SIE_STATUS properly reflects VBUS_DETECTED, CONNECTED, BUS_RESET, SETUP_REC, TRANS_COMPLETE
+- BUFF_STATUS tracking with W1C semantics, INTR/INTS dynamic computation
+- Control transfer phase tracking (setup → data in/out → status in/out → done)
+- Enumeration waits for PULLUP_EN (SIE_CTRL bit 16) before starting
+- Paced by firmware EP0 buffer responses (polls buffer control for AVAILABLE/FULL)
+
+**USB CDC Data Bridge**:
+
+- Configuration descriptor parsing to find CDC bulk endpoints (class 0x0A, endpoint type 2)
+- CDC bulk IN: firmware data printed to stdout
+- CDC bulk OUT: `usb_cdc_rx_push()` injects stdin bytes into device
+- `usb_step()` called from main loop advances enumeration and CDC transfer
+- `stdio_usb_connected()` returns true after full enumeration
+
+**Flash Persistence** (`-flash <path>`):
+
+- On startup: loads flash file, restores non-firmware sectors (preserves UF2 firmware, restores filesystem)
+- On exit: saves full 2MB flash image to file
+- Smart sector detection: 4KB sectors compared against 0xFF to identify firmware vs filesystem
+- Enables littlefs/FAT filesystem persistence across emulator runs
+
+### Files Modified
+
+- `include/usb.h` - Complete rewrite: enumeration enums, CDC fields, expanded state struct
+- `src/usb.c` - Complete rewrite (~400 lines): enumeration engine, CDC bridge, control transfers
+- `src/main.c` - `-flash` option, flash load/save, `usb_step()` in main loop, USB stdin bridging
+- `docs/ROADMAP.md` - Sections 5.4 (USB) and 5.5 (Flash) marked COMPLETE
+
+---
+
+## [0.20.0] - 2026-03-09
+
+### Added - GPIO Interrupts, PIO INTR, Dynamic Frequency
+
+**GPIO Edge/Level Interrupt Detection**:
+
+- Automatic INTR bit setting when pin values change via SIO writes or `gpio_set_input_pin()`
+- Level interrupts: continuously recomputed from current pin state (not latched)
+- Edge interrupts: latched on rising/falling transitions, cleared by W1C
+- Triggers NVIC IRQ 13 (IO_IRQ_BANK0) through INTE/INTF/INTS chain
+- `gpio_set_input_pin()` API for external input changes with event detection
+
+**PIO INTR from FIFO Status**:
+
+- INTR register dynamically computed from hardware state:
+  - Bits [11:8]: SM IRQ flags
+  - Bits [7:4]: TX FIFO not full (per SM)
+  - Bits [3:0]: RX FIFO not empty (per SM)
+- INTS = (INTR | INTF) & INTE for both IRQ0 and IRQ1
+- IRQ check after each `pio_step()` cycle and after `pio_write32()`
+
+**Dynamic Frequency Reporting**:
+
+- FC0_RESULT computed from PLL_SYS registers: `(12MHz * FBDIV) / (REFDIV * POSTDIV1 * POSTDIV2)`
+- `machine.freq()` returns actual configured frequency instead of hardcoded 125MHz
+- Defaults to 125MHz when PLL not yet configured
+
+### Files Modified
+
+- `src/gpio.c` - Edge/level detection, `gpio_effective_pins()`, `gpio_detect_events()`, `gpio_set_input_pin()`
+- `include/gpio.h` - `gpio_set_input_pin()` declaration
+- `src/pio.c` - `pio_compute_intr()`, `pio_check_irq()`, dynamic INTR/INTS reads
+- `src/clocks.c` - FC0_RESULT from PLL_SYS, FC0_REF_KHZ through FC0_SRC stubs
+- `docs/ROADMAP.md` - Sections 5.1-5.3 marked COMPLETE
+
+---
+
+## [0.19.0] - 2026-03-08
+
+### Added - ROM Soft-Float, HardFault, Exception Nesting, Peripheral IRQs
+
+**ROM Soft-Float/Double**:
+
+- BX LR stubs at 0x0500-0x0567 for 'SF'/'SD' ROM data tables
+- Intercepted by PC check in `cpu_step()`, native C float/double operations
+- Covers all standard operations: add, sub, mul, div, sqrt, trig, conversions
+
+**ROM Flash Write**:
+
+- `flash_range_erase()`: memset to 0xFF for specified sector range
+- `flash_range_program()`: byte copy to flash for specified range
+- Intercepted via ROM function table
+
+**HardFault Exception**:
+
+- Vector 3 triggered on bad PC, undefined instructions, unimplemented opcodes
+- Replaces halt behavior with proper ARM exception entry
+
+**Exception Nesting**:
+
+- Stack of active exceptions (MAX_EXCEPTION_DEPTH=8) replaces single `current_irq`
+- Nested exceptions restore previous exception on return
+- EXC_RETURN 0xFFFFFFFD (thread mode PSP) accepted
+
+**SIO Interpolators**:
+
+- 2 per core at 0xD0000080-0xD00000FF
+- ACCUM0/1, BASE0/1/2, CTRL_LANE0/1 with shift/mask/sign-extend
+- PEEK/POP/FULL result computation, BASE_1AND0 combined write
+
+**Peripheral IRQ Delivery**:
+
+- All peripherals now signal NVIC: UART→IRQ20/21, GPIO→IRQ13, PIO→IRQ7-10, ADC→IRQ22,
+  SPI→IRQ18/19, I2C→IRQ23/24, PWM→IRQ4, DMA→IRQ11/12, Timer→IRQ0-3, FIFO→IRQ15/16
+
+**Watchdog Reboot**:
+
+- CTRL bit 31 (TRIGGER) resets entire emulator (re-inits cores, NVIC, timer, ROM)
+- AIRCR SYSRESETREQ (0x05FA0004) also triggers system reset
+
+**RTC Stub** (0x4005C000):
+
+- Register-level: CLKDIV_M1, SETUP_0/1, CTRL, IRQ registers
+- CTRL.ACTIVE reflects CTRL.ENABLE, setup values returned as current time
+
+**Debug Logging**:
+
+- `-debug-mem` flag logs unmapped peripheral read/write access to stderr
+
+### Files Added
+
+- `src/rtc.c`, `include/rtc.h` - RTC peripheral stub
+
+### Files Modified
+
+- `src/rom.c` - Soft-float/double interception, flash write functions
+- `src/cpu.c` - HardFault, exception nesting, EXC_RETURN PSP, ROM PC interception
+- `src/membus.c` - SIO interpolators, AIRCR SYSRESETREQ
+- `src/clocks.c` - Watchdog reboot trigger
+- `src/gpio.c`, `src/uart.c`, `src/pio.c`, `src/adc.c`, `src/spi.c`, `src/i2c.c`, `src/pwm.c`, `src/dma.c` - NVIC IRQ signaling
+- `src/main.c` - `-debug-mem` flag, RTC init
+- `tests/test_suite.c` - 230 tests total
+
+---
+
 ## [0.18.0] - 2026-03-08
 
 ### Added - ADC FIFO, USB Module, README Refactor

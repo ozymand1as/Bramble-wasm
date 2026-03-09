@@ -2,9 +2,9 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.18.0
+## Current Status: v0.21.0
 
-228 tests passing. Boots and runs Pico SDK firmware with full peripheral emulation.
+230 tests passing. Boots and runs Pico SDK firmware with full peripheral emulation, USB CDC enumeration, and flash filesystem persistence.
 
 ### Coverage
 
@@ -12,18 +12,19 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 |------|--------|---------|
 | CPU | 65+ instructions | Full Thumb-1 + BL/MSR/MRS/DSB/DMB/ISB, O(1) dispatch, NZCV flags |
 | Dual-Core | Complete | Zero-copy context switching, per-core RAM, shared FIFO, spinlocks |
-| Memory Map | ~90% | Flash + XIP aliases + XIP SRAM + SRAM + SRAM alias + ROM (4KB) |
-| Boot | Complete | Vector table, boot2 auto-detect, ROM function table, SDK peripherals |
-| Exceptions | ~70% | NVIC priority preemption, SysTick, PendSV, SVCall, PRIMASK |
+| Memory Map | ~95% | Flash + XIP aliases + XIP SRAM + SRAM + SRAM alias + ROM (4KB) |
+| Boot | Complete | Vector table, boot2 auto-detect, ROM function table, ROM soft-float/double |
+| Exceptions | ~90% | NVIC priority preemption, SysTick, PendSV, SVCall, HardFault, exception nesting |
 | Timing | Cycle-accurate | Configurable clock (`-clock 125`), ARMv6-M instruction costs |
 | Debugging | GDB RSP | Breakpoints, single-step, register/memory access (`-gdb`) |
-| Tests | 218 | CTest integrated, 45+ categories |
+| Flash | Persistent | `-flash <path>` saves/loads 2MB flash image across runs |
+| Tests | 230 | CTest integrated, 50+ categories |
 
 ### Peripherals
 
 | Peripheral | Address | Emulation Level |
 |------------|---------|-----------------|
-| GPIO | `0x40014000` / `0xD0000000` | Full (30 pins, SIO, IO_BANK0, PADS, interrupts) |
+| GPIO | `0x40014000` / `0xD0000000` | Full (30 pins, SIO, IO_BANK0, PADS, edge/level interrupts) |
 | UART | `0x40034000` / `0x40038000` | Full (dual PL011, Tx+Rx, 16-deep FIFO, stdin polling) |
 | SPI | `0x4003C000` / `0x40040000` | Registers (dual PL022, status, peripheral ID) |
 | I2C | `0x40044000` / `0x40048000` | Registers (dual DW_apb_i2c, status, component ID) |
@@ -35,19 +36,19 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 | SysTick | `0xE000E010` | Full (CSR/RVR/CVR/CALIB, TICKINT, COUNTFLAG) |
 | NVIC | `0xE000E100` | Full (priority preemption, 4 levels, SCB_SHPR) |
 | Resets | `0x4000C000` | Full (reset/unreset, RESET_DONE tracking) |
-| Clocks | `0x40008000` | Full (10 generators, FC0, SELECTED) |
+| Clocks | `0x40008000` | Full (10 generators, FC0 dynamic freq, SELECTED) |
 | XOSC/PLLs | `0x40024000` | Full (STATUS.STABLE, CS.LOCK) |
-| Watchdog | `0x40058000` | Full (CTRL, TICK, SCRATCH[0-7]) |
-| SIO | `0xD0000000` | Full (GPIO, FIFO, spinlocks, hardware divider) |
-| ROM | `0x00000000` | Full (4KB, function table, Thumb code stubs) |
-| USB | `0x50110000` | Stub (returns disconnected, SDK falls back to UART) |
+| Watchdog | `0x40058000` | Full (CTRL, TICK, SCRATCH[0-7], reboot) |
+| SIO | `0xD0000000` | Full (GPIO, FIFO, spinlocks, hardware divider, interpolators) |
+| ROM | `0x00000000` | Full (4KB, function table, soft-float/double, flash write) |
+| USB | `0x50110000` | Full (host enumeration, CDC data bridge, stdio_usb) |
 | XIP Cache | `0x14000000` | Stub (always ready) + 16KB XIP SRAM |
 
 All peripherals support RP2040 atomic register aliases (SET/CLR/XOR).
 
 ### Known Limitations
 
-- **USB**: Stub only (returns disconnected state). SDK gracefully falls back to UART.
+- **RTC**: Stub only (registers read/write, clock does not tick).
 - **Cycle timing**: Default 1 MHz (fast-forward). Use `-clock 125` for real RP2040 timing.
 - See [ROADMAP](docs/ROADMAP.md) for detailed status.
 
@@ -187,6 +188,8 @@ Bramble now supports flexible debug output modes:
 ./bramble firmware.uf2 -gdb            # Start GDB server on port 3333
 ./bramble firmware.uf2 -gdb 4444       # GDB server on custom port
 ./bramble firmware.uf2 -clock 125      # Real RP2040 timing (125 MHz)
+./bramble firmware.uf2 -flash fs.bin   # Persistent flash storage
+./bramble firmware.uf2 -debug-mem      # Log unmapped peripheral access
 ```
 
 **GDB Remote Debugging:**
@@ -240,6 +243,8 @@ Bramble/
 │   ├── pwm.c           # 8-slice PWM emulation
 │   ├── dma.c           # 12-channel DMA controller
 │   ├── pio.c           # Dual PIO block emulation (full instruction execution)
+│   ├── usb.c           # USB controller with host enumeration + CDC bridge
+│   ├── rtc.c           # RTC peripheral stub
 │   └── gdb.c           # GDB remote serial protocol stub
 ├── include/
 │   ├── emulator.h      # Core definitions, CPU state, memory layout
@@ -256,9 +261,10 @@ Bramble/
 │   ├── pwm.h           # PWM register definitions
 │   ├── dma.h           # DMA controller register definitions
 │   ├── pio.h           # PIO register definitions
+│   ├── usb.h           # USB controller register definitions
 │   └── gdb.h           # GDB RSP stub definitions
 ├── tests/
-│   └── test_suite.c    # Unit test suite (218+ tests, verbose, CTest integrated)
+│   └── test_suite.c    # Unit test suite (230+ tests, verbose, CTest integrated)
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test
@@ -270,7 +276,8 @@ Bramble/
 │   └── build.sh        # Firmware build script
 ├── docs/
 │   ├── GPIO.md         # GPIO peripheral documentation
-│   └── NVIC_audit_report.md # NVIC audit findings and recommendations
+│   ├── NVIC_audit_report.md # NVIC audit findings and recommendations
+│   └── ROADMAP.md      # Development roadmap and feature status
 ├── CMakeLists.txt      # Build configuration
 ├── build.sh            # Top-level build script
 ├── CHANGELOG.md        # Version history and changes
@@ -336,7 +343,7 @@ str r1, [r0]             /* Write 1 to clear */
 - **Function Select**: All 10 GPIO functions (SIO, UART, SPI, I2C, PWM, PIO0/1, etc.)
 - **Per-Pin Configuration**: Control and status registers via IO_BANK0
 - **Pad Control**: Pull-up/down, drive strength via PADS_BANK0
-- **Interrupt Support**: Registers implemented (NVIC integration pending)
+- **Interrupt Support**: Full edge/level detection with NVIC delivery (IRQ 13)
 
 ### Quick Example
 
@@ -539,17 +546,16 @@ The GPIO test executes 2M+ instructions in under 1 second. Performance is adequa
 ## Future Work
 
 1. **GDB Enhancements**: Watchpoints, Core 1 debugging, conditional breakpoints
-2. **USB Device Mode**: Full endpoint handling (stub returns disconnected; SDK falls back to UART)
+2. **RTC**: Actual time ticking (currently a stub)
 3. **Performance**: JIT compilation for hot loops, instruction caching
 
 ## Contributing
 
 The Bramble project is open for contributions! Areas that need help:
 
-1. **Peripheral Emulation**: USB device mode
-2. **Testing**: New test firmware, edge cases, performance benchmarks
-3. **Debugging**: GDB watchpoints, Core 1 debugging
-4. **Documentation**: Register descriptions, usage examples, architecture guides
+1. **Testing**: MicroPython/CircuitPython firmware, edge cases, performance benchmarks
+2. **Debugging**: GDB watchpoints, Core 1 debugging
+3. **Documentation**: Register descriptions, usage examples, architecture guides
 
 Run `ctest` to verify changes don't break existing tests. See [CHANGELOG.md](CHANGELOG.md) for recent updates and [docs/](docs/) for detailed technical documentation.
 
