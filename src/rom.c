@@ -435,9 +435,6 @@ static int rom_intercept_double(int idx) {
 
 static int rom_intercept_flash(uint32_t pc) {
     if (pc == ROM_FLASH_RANGE_ERASE_ADDR) {
-        /* flash_range_erase(uint32_t flash_offs, size_t count,
-         *                   uint32_t block_size, uint8_t block_cmd)
-         * R0 = flash offset, R1 = byte count */
         uint32_t offs = cpu.r[0];
         uint32_t count = cpu.r[1];
         if (offs + count <= FLASH_SIZE) {
@@ -447,9 +444,6 @@ static int rom_intercept_flash(uint32_t pc) {
     }
 
     if (pc == ROM_FLASH_RANGE_PROGRAM_ADDR) {
-        /* flash_range_program(uint32_t flash_offs, const uint8_t *data,
-         *                     size_t count)
-         * R0 = flash offset, R1 = data pointer (in RAM), R2 = byte count */
         uint32_t offs = cpu.r[0];
         uint32_t src = cpu.r[1];
         uint32_t count = cpu.r[2];

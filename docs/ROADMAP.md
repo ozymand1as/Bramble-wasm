@@ -1,14 +1,15 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.23.0
+## Current State: v0.25.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | Instructions | ~75% | 65+ Thumb-1; 32-bit: BL, MSR, MRS, DSB/DMB/ISB |
-| Memory Map | ~95% | Flash + XIP aliases + XIP cache ctrl + XIP SRAM + XIP SSI + SRAM + SRAM alias + ROM (4KB) |
-| Peripherals | ~99% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx+stdin), SPI, I2C, PWM, DMA, PIO (full + clkdiv), Resets, Clocks, XOSC, PLLs, Watchdog (reboot), ADC (FIFO + round-robin), SIO divider + interpolators, USB (host enum + CDC), RTC (ticking) |
+| Memory Map | ~95% | Flash + XIP aliases + XIP cache ctrl + XIP SRAM + XIP SSI + SRAM + SRAM alias + ROM (16KB) |
+| Peripherals | ~99% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx+stdin), SPI, I2C, PWM, DMA, PIO (full + clkdiv), Resets, Clocks, XOSC, PLLs, ROSC, Watchdog (reboot), ADC (FIFO + round-robin), SIO divider + interpolators, USB (host enum + CDC + multi-packet IN), RTC (ticking), SYSINFO, IO_QSPI, PADS_QSPI |
 | Exceptions | ~90% | Entry/return, priority preemption, SysTick, PendSV, HardFault, exception nesting |
 | Boot | ~95% | Vector table + SDK boot peripherals + ROM function table + boot2 auto-detect + ROM soft-float/double |
+| Firmware | MicroPython + CircuitPython | MicroPython v1.27.0 REPL + CircuitPython 10.1.3 code.py via USB CDC |
 
 ---
 
@@ -97,7 +98,7 @@ on M0+. The original roadmap incorrectly listed these.
 
 ~~SDK calls ROM utility functions (memcpy, popcount, etc.) via table at 0x00000018.~~
 
-- 4KB ROM at 0x00000000 with RP2040-compatible layout (magic, pointers, function table)
+- 16KB ROM at 0x00000000 with RP2040-compatible layout (magic, pointers, function table)
 - Thumb code: `rom_table_lookup`, `memcpy`, `memset`, `popcount32`, `clz32`, `ctz32`
 - Flash function stubs (connect, exit_xip, flush, enter_xip)
 - **Soft-float/double** (v0.19.0): ROM data tables ('SF'/'SD') with native C float/double interception
@@ -175,8 +176,11 @@ on M0+. The original roadmap incorrectly listed these.
 - Proper USB module (usb.c/usb.h) with register-level emulation
 - 4KB DPRAM backed by real memory (endpoint descriptors writable/readable)
 - MAIN_CTRL, SIE_CTRL, USB_MUXING, USB_PWR writable with atomic aliases
-- SIE_STATUS always returns 0 (no VBUS, not connected)
-- SDK's stdio_usb_init() times out gracefully and falls back to UART
+- Full host enumeration simulation: bus reset → descriptor fetches → configuration
+- CDC data bridge: bulk IN → stdout, stdin → bulk OUT
+- Multi-packet IN accumulation for descriptors > 64 bytes
+- DPRAM byte/halfword access (read-modify-write routing for TinyUSB memcpy)
+- SIE_STATUS/BUFF_STATUS/INTR dynamically computed; W1C for status bits
 
 ### 3.9 RTC (0x4005C000) [COMPLETE]
 
@@ -316,7 +320,27 @@ on M0+. The original roadmap incorrectly listed these.
 - Full calendar rollover with leap year support
 - RTC_1/RTC_0 return packed running time instead of raw setup values
 
-### 5.8 Nice to Have
+### 5.8 Peripheral Stubs [COMPLETE]
+
+- SYSINFO (0x40000000): CHIP_ID returns RP2040-B2, PLATFORM=ASIC, GITREF_RP2040
+- IO_QSPI (0x40018000): 6 QSPI GPIO pins with STATUS/CTRL + interrupt registers
+- PADS_QSPI (0x40020000): QSPI pad electrical control registers
+- XIP SSI atomic aliases: SET/CLR/XOR at +0x2000/+0x3000/+0x1000 from 0x18000000
+
+### 5.9 ROSC (0x40060000) [COMPLETE]
+
+- Ring Oscillator with CTRL, STATUS, RANDOMBIT, FREQA/B, DIV, PHASE, COUNT registers
+- STATUS: STABLE (bit 31) + ENABLED (bit 24) based on CTRL enable field (0xFAB)
+- RANDOMBIT: xorshift LFSR pseudo-random bit generation
+- Integrated into clocks module with full atomic register alias support
+
+### 5.10 SIO QSPI GPIO Input [COMPLETE]
+
+- SIO_GPIO_HI_IN (0xD0000008): QSPI GPIO input register (6 pins: SCLK, SS, SD0-3)
+- Returns CS(SS) high + data lines pulled up (0x3E) for normal flash operation
+- GPIO offset routing in sio_read32() to prevent interception before gpio_read32()
+
+### 5.11 Nice to Have
 
 - Dormant/sleep mode
 - Double-precision ROM functions (currently stubs but untested)

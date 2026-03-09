@@ -2,9 +2,9 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.23.0
+## Current Status: v0.25.0
 
-237 tests passing. Boots and runs Pico SDK firmware with full peripheral emulation, USB CDC enumeration, and flash filesystem persistence. Clean stdout/stderr separation for firmware output piping.
+237 tests passing. Boots and runs Pico SDK firmware including **MicroPython v1.27.0** and **CircuitPython 10.1.3** with USB CDC REPL. Full peripheral emulation, USB host enumeration simulation, and flash filesystem persistence.
 
 ### Coverage
 
@@ -12,7 +12,7 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 |------|--------|---------|
 | CPU | 65+ instructions | Full Thumb-1 + BL/MSR/MRS/DSB/DMB/ISB, O(1) dispatch, NZCV flags |
 | Dual-Core | Complete | Zero-copy context switching, per-core RAM, shared FIFO, spinlocks |
-| Memory Map | ~95% | Flash + XIP aliases + XIP SRAM + SRAM + SRAM alias + ROM (4KB) |
+| Memory Map | ~95% | Flash + XIP aliases + XIP SRAM + SRAM + SRAM alias + ROM (16KB) |
 | Boot | Complete | Vector table, boot2 auto-detect, ROM function table, ROM soft-float/double |
 | Exceptions | ~90% | NVIC priority preemption, SysTick, PendSV, SVCall, HardFault, exception nesting |
 | Timing | Cycle-accurate | Configurable clock (`-clock 125`), ARMv6-M instruction costs |
@@ -40,8 +40,12 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 | XOSC/PLLs | `0x40024000` | Full (STATUS.STABLE, CS.LOCK) |
 | Watchdog | `0x40058000` | Full (CTRL, TICK, SCRATCH[0-7], reboot) |
 | SIO | `0xD0000000` | Full (GPIO, FIFO, spinlocks, hardware divider, interpolators) |
-| ROM | `0x00000000` | Full (4KB, function table, soft-float/double, flash write) |
-| USB | `0x50110000` | Full (host enumeration, CDC data bridge, stdio_usb) |
+| ROM | `0x00000000` | Full (16KB, function table, soft-float/double, flash write) |
+| USB | `0x50110000` | Full (host enumeration, CDC data bridge, stdio_usb, multi-packet IN) |
+| SYSINFO | `0x40000000` | Stub (CHIP_ID=RP2040-B2, PLATFORM=ASIC) |
+| IO_QSPI | `0x40018000` | Stub (6 QSPI GPIO pins, STATUS/CTRL) |
+| PADS_QSPI | `0x40020000` | Stub (QSPI pad electrical control) |
+| ROSC | `0x40060000` | Full (STATUS, RANDOMBIT LFSR, CTRL enable) |
 | RTC | `0x4005C000` | Full (LOAD strobe, calendar rollover, leap year, ticking) |
 | XIP Cache | `0x14000000` | Stub (always ready) + 16KB XIP SRAM |
 
@@ -191,6 +195,19 @@ Bramble now supports flexible debug output modes:
 ./bramble firmware.uf2 -clock 125      # Real RP2040 timing (125 MHz)
 ./bramble firmware.uf2 -flash fs.bin   # Persistent flash storage
 ./bramble firmware.uf2 -debug-mem      # Log unmapped peripheral access
+```
+
+**MicroPython REPL:**
+
+```bash
+./bramble python/micropython.uf2 -stdin -clock 125 -flash mpy.bin
+```
+
+Output:
+```
+MicroPython v1.27.0 on 2025-12-09; Raspberry Pi Pico with RP2040
+Type "help()" for more information.
+>>>
 ```
 
 **GDB Remote Debugging:**
@@ -457,7 +474,7 @@ Peripherals are integrated into the memory bus (`membus.c`):
 - PIO: `0x50200000` / `0x50300000` (2 blocks, 4 SMs each, full instruction execution)
 - XIP Cache: `0x14000000` (CTRL, FLUSH, STAT, counters, stream)
 - XIP SRAM: `0x15000000` (16KB cache as SRAM)
-- ROM: `0x00000000` (4KB with function table and Thumb code)
+- ROM: `0x00000000` (16KB with function table and Thumb code)
 
 ### Timer Timing Model
 

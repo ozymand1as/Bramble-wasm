@@ -16,6 +16,7 @@
 
 /* SIO GPIO Registers (fast GPIO access) */
 #define SIO_GPIO_IN         (SIO_BASE_GPIO + 0x004)  /* GPIO input values */
+#define SIO_GPIO_HI_IN      (SIO_BASE_GPIO + 0x008)  /* QSPI GPIO input values (6 pins) */
 #define SIO_GPIO_OUT        (SIO_BASE_GPIO + 0x010)  /* GPIO output values */
 #define SIO_GPIO_OUT_SET    (SIO_BASE_GPIO + 0x014)  /* Atomic bit set */
 #define SIO_GPIO_OUT_CLR    (SIO_BASE_GPIO + 0x018)  /* Atomic bit clear */

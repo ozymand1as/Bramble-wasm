@@ -1,5 +1,81 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.25.0] - 2026-03-09
+
+### Added - CircuitPython Support
+
+**CircuitPython 10.1.3 boots and runs code.py via USB CDC stdio.**
+
+Command: `./bramble python/circuitpython.uf2 -stdin -clock 125`
+
+**ROSC Peripheral (0x40060000)**:
+
+- Ring Oscillator with CTRL, STATUS, RANDOMBIT, FREQA/B, DIV, PHASE, COUNT
+- STATUS returns STABLE=1 (bit 31) + ENABLED when CTRL=0xFAB
+- RANDOMBIT uses xorshift LFSR for pseudo-random bit generation
+- Integrated into clocks module with atomic register aliases
+
+**SIO QSPI GPIO Input**:
+
+- SIO_GPIO_HI_IN (0xD0000008) returns QSPI pin state (CS high, data lines pulled up)
+- GPIO offset routing in sio_read32() delegates to gpio module for GPIO-range offsets
+
+**USB CDC Fixes**:
+
+- CDC DTR signaling: SET_CONTROL_LINE_STATE (0x22) with DTR+RTS required for CircuitPython serial output
+- CDC interface fix: Communication interface (class 0x02) preserved as cdc_iface, not overwritten by Data interface (class 0x0A)
+- Skip SET_LINE_CODING OUT data phase (causes hangs with some firmware)
+- CDC buf_ctrl requires both AVAILABLE and FULL bits for data reads
+
+### Files Modified
+
+- `include/clocks.h` - ROSC register defines and state fields
+- `include/gpio.h` - SIO_GPIO_HI_IN define
+- `src/clocks.c` - ROSC read/write handlers with LFSR RANDOMBIT
+- `src/gpio.c` - SIO_GPIO_HI_IN case in gpio_read32
+- `src/membus.c` - ROSC in is_clocks_addr(), GPIO offset routing in sio_read32()
+- `src/usb.c` - CDC DTR, interface fix, skip SET_LINE_CODING, buf_ctrl fix
+
+---
+
+## [0.24.0] - 2026-03-09
+
+### Added - MicroPython Support
+
+**MicroPython v1.27.0 boots and runs REPL via USB CDC stdio.**
+
+Command: `./bramble python/micropython.uf2 -stdin -clock 125 -flash mpy.bin`
+
+**USB Fixes**:
+
+- Fixed buffer control bit definitions: BUFFER0 (lower halfword) instead of BUFFER1 (upper halfword)
+- Added DPRAM byte/halfword access routing (read-modify-write for TinyUSB memcpy)
+- Multi-packet IN accumulation for descriptors > 64 bytes (EP0 max packet size)
+- CDC endpoint defaults (EP2 IN/OUT) when config descriptor parsing truncated
+- Skip optional CDC class setup (SET_LINE_CODING/SET_CONTROL_LINE_STATE)
+
+**Peripheral Stubs**:
+
+- SYSINFO (0x40000000): CHIP_ID returns RP2040-B2, PLATFORM=ASIC
+- IO_QSPI (0x40018000): 6 QSPI GPIO pins with STATUS/CTRL + interrupt registers
+- PADS_QSPI (0x40020000): QSPI pad electrical control registers
+- XIP SSI atomic aliases: SET/CLR/XOR at +0x2000/+0x3000/+0x1000 from 0x18000000
+
+**Other Fixes**:
+
+- ROM expanded to 16KB (matching real RP2040 bootrom)
+- POP PC with EXC_RETURN: SP updated before exception return processing (critical for nested exceptions)
+
+### Files Modified
+
+- `include/rom.h` - ROM_SIZE 0x1000→0x4000
+- `include/usb.h` - Buffer control bit definitions (BUFFER0), multi-packet IN fields
+- `src/membus.c` - USB DPRAM byte/halfword routing, SYSINFO/IO_QSPI/PADS_QSPI stubs, XIP SSI aliases
+- `src/usb.c` - Multi-packet IN, CDC endpoint defaults, skip CDC class setup
+- `src/instructions.c` - POP EXC_RETURN SP fix
+
+---
+
 ## [0.23.0] - 2026-03-09
 
 ### Changed - Clean Output Separation + Robustness

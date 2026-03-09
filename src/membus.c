@@ -475,7 +475,7 @@ static int is_clocks_addr(uint32_t addr) {
     return (base == RESETS_BASE  || base == CLOCKS_BASE ||
             base == XOSC_BASE   || base == PLL_SYS_BASE ||
             base == PLL_USB_BASE || base == WATCHDOG_BASE ||
-            base == PSM_BASE);
+            base == PSM_BASE    || base == ROSC_BASE);
 }
 
 static int is_adc_addr(uint32_t addr) {
@@ -873,6 +873,18 @@ static uint32_t sio_read32(uint32_t offset) {
         int interp_idx = (offset >= 0xC0) ? 1 : 0;
         uint32_t reg = (offset - (interp_idx ? 0xC0 : 0x80));
         return sio_interp_read(interp_idx, reg);
+    }
+
+    /* GPIO offsets in SIO space - delegate to gpio module */
+    if ((offset >= SIO_GPIO_IN_OFFSET && offset <= 0x2C) ||
+        (offset >= 0x30 && offset <= 0x4C)) {
+        /* 0x04-0x2C = GPIO bank 0, 0x30-0x4C = GPIO_HI (QSPI) */
+        if (offset == SIO_GPIO_HI_IN_OFFSET) {
+            /* QSPI GPIO input: 6 pins (SCLK=0, SS=1, SD0-3=2-5) */
+            /* Default: CS(SS) high, data lines high (pulled up) */
+            return 0x3E;
+        }
+        return gpio_read32(SIO_BASE + offset);
     }
 
     switch (offset) {

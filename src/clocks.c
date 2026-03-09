@@ -386,6 +386,64 @@ static void psm_write(uint32_t addr, uint32_t val, uint32_t alias) {
 }
 
 /* ========================================================================
+ * ROSC (Ring Oscillator) - 0x40060000
+ * ======================================================================== */
+
+static uint32_t rosc_read(uint32_t addr) {
+    uint32_t offset = addr & 0xFFF;
+    switch (offset) {
+    case 0x00: return clocks_state.rosc_ctrl;
+    case 0x04: return clocks_state.rosc_freqa;
+    case 0x08: return clocks_state.rosc_freqb;
+    case 0x10: return clocks_state.rosc_div;
+    case 0x14: return clocks_state.rosc_phase;
+    case 0x18: {
+        /* STATUS: bit 31=STABLE, bit 24=ENABLED, bit 12=DIV_RUNNING */
+        uint32_t enabled = ((clocks_state.rosc_ctrl >> 12) & 0xFFF) == 0xFAB ? 1 : 0;
+        return (1u << 31) | (enabled << 24) | (1u << 12);
+    }
+    case 0x1C: {
+        /* RANDOMBIT: pseudo-random via LFSR */
+        uint32_t s = clocks_state.rosc_random_state;
+        if (s == 0) s = 0xDEADBEEF;
+        s ^= s << 13;
+        s ^= s >> 17;
+        s ^= s << 5;
+        clocks_state.rosc_random_state = s;
+        return s & 1;
+    }
+    case 0x20: return clocks_state.rosc_count;
+    default: return 0;
+    }
+}
+
+static void rosc_write(uint32_t addr, uint32_t val, uint32_t alias) {
+    uint32_t offset = addr & 0xFFF;
+    switch (offset) {
+    case 0x00:
+        clocks_state.rosc_ctrl = apply_alias_write(clocks_state.rosc_ctrl, val, alias);
+        break;
+    case 0x04:
+        clocks_state.rosc_freqa = apply_alias_write(clocks_state.rosc_freqa, val, alias);
+        break;
+    case 0x08:
+        clocks_state.rosc_freqb = apply_alias_write(clocks_state.rosc_freqb, val, alias);
+        break;
+    case 0x10:
+        clocks_state.rosc_div = apply_alias_write(clocks_state.rosc_div, val, alias);
+        break;
+    case 0x14:
+        clocks_state.rosc_phase = apply_alias_write(clocks_state.rosc_phase, val, alias);
+        break;
+    case 0x20:
+        clocks_state.rosc_count = apply_alias_write(clocks_state.rosc_count, val, alias);
+        break;
+    default:
+        break;
+    }
+}
+
+/* ========================================================================
  * Top-level dispatch (called from membus.c)
  * ======================================================================== */
 
@@ -412,6 +470,8 @@ uint32_t clocks_read32(uint32_t addr) {
         return watchdog_read(canonical);
     if (base_aligned == PSM_BASE)
         return psm_read(canonical);
+    if (base_aligned == ROSC_BASE)
+        return rosc_read(canonical);
 
     return 0;
 }
@@ -435,4 +495,6 @@ void clocks_write32(uint32_t addr, uint32_t val) {
         watchdog_write(canonical, val, alias);
     else if (base_aligned == PSM_BASE)
         psm_write(canonical, val, alias);
+    else if (base_aligned == ROSC_BASE)
+        rosc_write(canonical, val, alias);
 }

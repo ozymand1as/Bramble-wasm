@@ -45,6 +45,18 @@
 #define CLK_FC0_STATUS          (CLOCKS_BASE + 0x98)
 #define CLK_FC0_RESULT          (CLOCKS_BASE + 0x9C)
 
+/* ROSC (0x40060000) - Ring Oscillator */
+#define ROSC_BASE               0x40060000
+#define ROSC_CTRL               (ROSC_BASE + 0x00)
+#define ROSC_FREQA              (ROSC_BASE + 0x04)
+#define ROSC_FREQB              (ROSC_BASE + 0x08)
+#define ROSC_DORMANT            (ROSC_BASE + 0x0C)
+#define ROSC_DIV                (ROSC_BASE + 0x10)
+#define ROSC_PHASE              (ROSC_BASE + 0x14)
+#define ROSC_STATUS             (ROSC_BASE + 0x18)
+#define ROSC_RANDOMBIT          (ROSC_BASE + 0x1C)
+#define ROSC_COUNT              (ROSC_BASE + 0x20)
+
 /* XOSC (0x40024000) */
 #define XOSC_BASE               0x40024000
 #define XOSC_CTRL               (XOSC_BASE + 0x00)
@@ -138,6 +150,15 @@ typedef struct {
     uint32_t psm_frce_on;
     uint32_t psm_frce_off;
     uint32_t psm_wdsel;
+
+    /* ROSC */
+    uint32_t rosc_ctrl;
+    uint32_t rosc_freqa;
+    uint32_t rosc_freqb;
+    uint32_t rosc_div;
+    uint32_t rosc_phase;
+    uint32_t rosc_count;
+    uint32_t rosc_random_state;  /* LFSR for RANDOMBIT */
 } clocks_state_t;
 
 /* Functions */

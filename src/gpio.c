@@ -108,8 +108,13 @@ uint32_t gpio_read32(uint32_t addr) {
                 /* Return current input values */
                 /* For pins configured as outputs, return the output value */
                 /* For inputs, return the gpio_in value */
-                return (gpio_state.gpio_out & gpio_state.gpio_oe) | 
+                return (gpio_state.gpio_out & gpio_state.gpio_oe) |
                        (gpio_state.gpio_in & ~gpio_state.gpio_oe);
+
+            case SIO_GPIO_HI_IN:
+                /* QSPI GPIO input: 6 pins (SCLK=0, SS=1, SD0-3=2-5) */
+                /* Default: CS(SS) high, data lines high (pulled up) */
+                return 0x3E;  /* bits 1-5 set: SS + SD0-3 high */
 
             case SIO_GPIO_OUT:
                 return gpio_state.gpio_out;

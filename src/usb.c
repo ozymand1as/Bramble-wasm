@@ -225,12 +225,11 @@ static void usb_parse_config_desc(void) {
             int iface_class = buf[pos + 5];
             int iface_subclass = buf[pos + 6];
             if (iface_class == 0x0A) {
-                /* CDC Data class */
+                /* CDC Data class — endpoints are here */
                 in_cdc_data = 1;
-                usb_state.cdc_iface = buf[pos + 2];
             } else {
                 if (iface_class == 0x02 && iface_subclass == 0x02) {
-                    /* CDC ACM — remember interface for class requests */
+                    /* CDC ACM Communication interface — class requests go here */
                     usb_state.cdc_iface = buf[pos + 2];
                 }
                 in_cdc_data = 0;
@@ -340,7 +339,11 @@ static void usb_enum_step(void) {
             usb_state.ctrl_state = USB_CTRL_IDLE;
             /* SET_CONFIGURATION 1 */
             usb_send_setup(0x00, 9, 1, 0, 0);
-            usb_state.enum_state = USB_ENUM_ACTIVE;
+            /* Skip SET_LINE_CODING (causes hangs with some firmware),
+             * go directly to SET_CONTROL_LINE_STATE for DTR/RTS.
+             * Delay to let firmware complete USB stack init before DTR. */
+            usb_state.enum_state = USB_ENUM_CDC_SET_CTRL_LINE;
+            usb_state.delay = 500;
         }
         break;
 
@@ -381,6 +384,7 @@ static void usb_enum_step(void) {
  * ======================================================================== */
 
 static void usb_handle_cdc(void) {
+    static int cdc_trace_count = 0;
     if (usb_state.cdc_in_ep == 0) return;
 
     /* Check CDC bulk IN endpoint for data from device */
@@ -388,7 +392,7 @@ static void usb_handle_cdc(void) {
     uint32_t buf_ctrl_off = USB_DPRAM_BUF_CTRL + ep * 8;  /* IN */
     uint32_t buf_ctrl = dpram_read32(buf_ctrl_off);
 
-    if ((buf_ctrl & USB_BUF_CTRL_AVAILABLE) && (buf_ctrl & USB_BUF_CTRL_FULL)) {
+    if ((buf_ctrl & USB_BUF_CTRL_FULL) && (buf_ctrl & USB_BUF_CTRL_AVAILABLE)) {
         int len = buf_ctrl & USB_BUF_CTRL_LEN_MASK;
 
         /* Get buffer address from EP control register */
