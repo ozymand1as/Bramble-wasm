@@ -350,6 +350,15 @@ void nvic_write_register(uint32_t addr, uint32_t val) {
             break;
 
         case SCB_AIRCR:
+            /* VECTKEY must be 0x05FA for write to take effect */
+            if ((val >> 16) == 0x05FA) {
+                if (val & (1u << 2)) {
+                    /* SYSRESETREQ: request system reset */
+                    extern int watchdog_reboot_pending;
+                    watchdog_reboot_pending = 1;
+                }
+            }
+            break;
         case SCB_SCR:
         case SCB_CCR:
             /* Accept writes silently */

@@ -1,4 +1,5 @@
 #include "i2c.h"
+#include "nvic.h"
 
 i2c_state_t i2c_state[2];
 
@@ -103,4 +104,8 @@ void i2c_write32(int i2c_num, uint32_t offset, uint32_t val) {
     case I2C_FS_SPKLEN:     c->fs_spklen = val & 0xFF; break;
     default: break;
     }
+
+    /* Signal NVIC if any masked interrupt is active */
+    if (c->raw_intr_stat & c->intr_mask)
+        nvic_signal_irq(i2c_num == 0 ? IRQ_I2C0_IRQ : IRQ_I2C1_IRQ);
 }

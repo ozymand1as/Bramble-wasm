@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "uart.h"
+#include "nvic.h"
 
 /* Two UART instances */
 uart_state_t uart_state[2];
@@ -43,6 +44,14 @@ static uint32_t rx_trigger_level(uart_state_t *u) {
     }
 }
 
+/* Signal NVIC if any masked interrupt is active */
+static void uart_check_irq(int uart_num) {
+    uart_state_t *u = &uart_state[uart_num];
+    if (u->ris & u->imsc) {
+        nvic_signal_irq(uart_num == 0 ? IRQ_UART0_IRQ : IRQ_UART1_IRQ);
+    }
+}
+
 /* Update RX interrupt status based on FIFO level */
 static void uart_rx_update_irq(uart_state_t *u) {
     if (u->rx_count >= rx_trigger_level(u)) {
@@ -62,6 +71,7 @@ int uart_rx_push(int uart_num, uint8_t data) {
     u->rx_count++;
 
     uart_rx_update_irq(u);
+    uart_check_irq(uart_num);
     return 1;
 }
 
@@ -207,4 +217,7 @@ void uart_write32(int uart_num, uint32_t offset, uint32_t val) {
     default:
         break;
     }
+
+    /* Check if any masked interrupt is now active */
+    uart_check_irq(uart_num);
 }

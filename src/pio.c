@@ -19,6 +19,18 @@
 
 pio_block_t pio_state[PIO_NUM_BLOCKS];
 
+#include "nvic.h"
+
+/* Check PIO interrupt conditions and signal NVIC */
+static void pio_check_irq(int pio_num) {
+    pio_block_t *p = &pio_state[pio_num];
+    /* IRQ0: (INTR | INTF) & INTE - simplified: use irq flags + force */
+    if (p->irq0_intf & p->irq0_inte)
+        nvic_signal_irq(pio_num == 0 ? IRQ_PIO0_IRQ_0 : IRQ_PIO1_IRQ_0);
+    if (p->irq1_intf & p->irq1_inte)
+        nvic_signal_irq(pio_num == 0 ? IRQ_PIO0_IRQ_1 : IRQ_PIO1_IRQ_1);
+}
+
 /* ========================================================================
  * FIFO Helpers
  * ======================================================================== */
@@ -782,4 +794,6 @@ void pio_write32(int pio_num, uint32_t offset, uint32_t val) {
         default: break;
         }
     }
+
+    pio_check_irq(pio_num);
 }

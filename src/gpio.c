@@ -2,6 +2,7 @@
 #include <string.h>
 #include "gpio.h"
 #include "emulator.h"
+#include "nvic.h"
 
 /* GPIO state */
 gpio_state_t gpio_state;
@@ -25,6 +26,19 @@ void gpio_reset(void) {
     gpio_state.gpio_oe = 0x00000000;
     gpio_state.gpio_out = 0x00000000;
     gpio_state.gpio_in = 0x00000000;
+}
+
+/* Recompute INTS and signal NVIC if any interrupt is active */
+static void gpio_check_irq(void) {
+    uint32_t any_active = 0;
+    for (int i = 0; i < 4; i++) {
+        gpio_state.proc0_ints[i] = (gpio_state.intr[i] | gpio_state.proc0_intf[i])
+                                    & gpio_state.proc0_inte[i];
+        any_active |= gpio_state.proc0_ints[i];
+    }
+    if (any_active) {
+        nvic_signal_irq(IRQ_IO_IRQ_BANK0);
+    }
 }
 
 /* Read from GPIO register space */
@@ -178,6 +192,7 @@ void gpio_write32(uint32_t addr, uint32_t val) {
             gpio_state.proc0_intf[offset - 8] = val;
         }
         /* INTS is read-only */
+        gpio_check_irq();
         return;
     }
 

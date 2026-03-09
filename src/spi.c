@@ -1,4 +1,5 @@
 #include "spi.h"
+#include "nvic.h"
 
 spi_state_t spi_state[2];
 
@@ -101,4 +102,8 @@ void spi_write32(int spi_num, uint32_t offset, uint32_t val) {
     default:
         break;
     }
+
+    /* Signal NVIC if any masked interrupt is active */
+    if (s->ris & s->imsc)
+        nvic_signal_irq(spi_num == 0 ? IRQ_SPI0_IRQ : IRQ_SPI1_IRQ);
 }

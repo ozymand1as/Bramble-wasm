@@ -2,6 +2,7 @@
 #include <string.h>
 #include "adc.h"
 #include "emulator.h"
+#include "nvic.h"
 
 /* Global ADC state */
 adc_state_t adc_state;
@@ -106,6 +107,8 @@ void adc_do_conversion(void) {
     uint32_t thresh = (adc_state.fcs & ADC_FCS_THRESH_MASK) >> ADC_FCS_THRESH_SHIFT;
     if (adc_state.fifo_count >= thresh && thresh > 0) {
         adc_state.intr |= 1;  /* FIFO interrupt */
+        if (adc_state.inte & 1)
+            nvic_signal_irq(IRQ_ADC_IRQ_FIFO);
     }
 
     /* Advance round-robin */

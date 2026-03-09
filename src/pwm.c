@@ -1,5 +1,6 @@
 #include <string.h>
 #include "pwm.h"
+#include "nvic.h"
 
 pwm_state_t pwm_state;
 
@@ -81,4 +82,8 @@ void pwm_write32(uint32_t offset, uint32_t val) {
     default:
         break;
     }
+
+    /* Signal NVIC if any masked interrupt is active */
+    if ((pwm_state.intr | pwm_state.intf) & pwm_state.inte)
+        nvic_signal_irq(IRQ_PWM_IRQ_WRAP);
 }

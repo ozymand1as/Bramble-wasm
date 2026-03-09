@@ -565,7 +565,7 @@ void cpu_exception_return(uint32_t lr_value) {
                lr_value, return_mode, cpu.r[13]);
     }
 
-    if (return_mode == 0x9 || return_mode == 0x1) {
+    if (return_mode == 0x9 || return_mode == 0x1 || return_mode == 0xD) {
         uint32_t sp = cpu.r[13];
 
         if (cpu.debug_enabled) {
