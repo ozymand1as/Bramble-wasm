@@ -29,6 +29,7 @@
 #include "dma.h"
 #include "pio.h"
 #include "usb.h"
+#include "rtc.h"
 
 /* ========================================================================
  * Test Framework (Verbose)
@@ -2948,6 +2949,107 @@ TEST(test_timing_stmia_ldmia_1_plus_n) {
 }
 
 /* ========================================================================
+ * CPUID and NVIC Extensions Tests
+ * ======================================================================== */
+
+static void test_cpuid_register(void) {
+    /* CPUID at 0xE000ED00 should return Cortex-M0+ identifier */
+    uint32_t cpuid = nvic_read_register(0xE000ED00);
+    /* Implementer=ARM(0x41), PartNo=0xC60(Cortex-M0+) */
+    ASSERT_EQ(0x41, (cpuid >> 24) & 0xFF, "CPUID Implementer = ARM");
+    ASSERT_EQ(0xC60, (cpuid >> 4) & 0xFFF, "CPUID PartNo = Cortex-M0+");
+    PASS();
+}
+
+static void test_nvic_iabr_read(void) {
+    /* IABR should return the active bit register */
+    nvic_init();
+    uint32_t iabr = nvic_read_register(NVIC_IABR);
+    ASSERT_EQ(0, iabr, "IABR initially 0");
+    PASS();
+}
+
+static void test_nvic_ipr7_readwrite(void) {
+    /* IPR7 covers IRQs 24-27 (RP2040 has 26 IRQs: 0-25) */
+    nvic_init();
+    /* Write priority for IRQ 24 and 25 */
+    nvic_write_register(NVIC_IPR + 24, 0x0000C040);
+    /* Read back */
+    uint32_t ipr7 = nvic_read_register(NVIC_IPR + 24);
+    ASSERT_EQ(0x40, ipr7 & 0xFF, "IPR7 byte 0 = IRQ24 priority 0x40");
+    ASSERT_EQ(0xC0, (ipr7 >> 8) & 0xFF, "IPR7 byte 1 = IRQ25 priority 0xC0");
+    PASS();
+}
+
+/* ========================================================================
+ * RTC Ticking Tests
+ * ======================================================================== */
+
+static void test_rtc_load_and_read(void) {
+    rtc_init();
+    /* Set date: 2026-03-09, Sunday(0), 14:30:45 */
+    rtc_state.setup_0 = (2026u << 12) | (3u << 8) | 9u;
+    rtc_state.setup_1 = (0u << 24) | (14u << 16) | (30u << 8) | 45u;
+    /* Load setup into running time */
+    rtc_write32(RTC_CTRL, RTC_CTRL_LOAD | RTC_CTRL_ENABLE);
+    /* Read back RTC_1 (year/month/day) */
+    uint32_t rtc1 = rtc_read32(RTC_RTC_1);
+    ASSERT_EQ(2026, (rtc1 >> 12) & 0xFFF, "RTC year = 2026");
+    ASSERT_EQ(3, (rtc1 >> 8) & 0xF, "RTC month = 3");
+    ASSERT_EQ(9, rtc1 & 0x1F, "RTC day = 9");
+    /* Read back RTC_0 (dotw/hour/min/sec) */
+    uint32_t rtc0 = rtc_read32(RTC_RTC_0);
+    ASSERT_EQ(14, (rtc0 >> 16) & 0x1F, "RTC hour = 14");
+    ASSERT_EQ(30, (rtc0 >> 8) & 0x3F, "RTC min = 30");
+    ASSERT_EQ(45, rtc0 & 0x3F, "RTC sec = 45");
+    PASS();
+}
+
+static void test_rtc_tick_seconds(void) {
+    rtc_init();
+    rtc_state.setup_0 = (2026u << 12) | (1u << 8) | 1u;
+    rtc_state.setup_1 = (0u << 24) | (0u << 16) | (0u << 8) | 0u;
+    rtc_write32(RTC_CTRL, RTC_CTRL_LOAD | RTC_CTRL_ENABLE);
+    /* Tick 3 seconds worth of microseconds */
+    rtc_tick(1000000);
+    rtc_tick(1000000);
+    rtc_tick(1000000);
+    uint32_t rtc0 = rtc_read32(RTC_RTC_0);
+    ASSERT_EQ(3, rtc0 & 0x3F, "RTC sec = 3 after 3M us");
+    PASS();
+}
+
+static void test_rtc_minute_rollover(void) {
+    rtc_init();
+    /* Start at 23:59:58 */
+    rtc_state.setup_0 = (2026u << 12) | (1u << 8) | 1u;
+    rtc_state.setup_1 = (0u << 24) | (23u << 16) | (59u << 8) | 58u;
+    rtc_write32(RTC_CTRL, RTC_CTRL_LOAD | RTC_CTRL_ENABLE);
+    /* Tick 3 seconds -> should roll to 00:00:01 next day */
+    rtc_tick(3000000);
+    uint32_t rtc0 = rtc_read32(RTC_RTC_0);
+    ASSERT_EQ(0, (rtc0 >> 16) & 0x1F, "RTC hour = 0 after midnight");
+    ASSERT_EQ(0, (rtc0 >> 8) & 0x3F, "RTC min = 0 after midnight");
+    ASSERT_EQ(1, rtc0 & 0x3F, "RTC sec = 1 after midnight");
+    /* Day should have advanced */
+    uint32_t rtc1 = rtc_read32(RTC_RTC_1);
+    ASSERT_EQ(2, rtc1 & 0x1F, "RTC day = 2 after midnight");
+    PASS();
+}
+
+static void test_rtc_not_ticking_when_disabled(void) {
+    rtc_init();
+    rtc_state.setup_0 = (2026u << 12) | (1u << 8) | 1u;
+    rtc_state.setup_1 = (0u << 24) | (0u << 16) | (0u << 8) | 0u;
+    /* Load but do NOT enable */
+    rtc_write32(RTC_CTRL, RTC_CTRL_LOAD);
+    rtc_tick(5000000);
+    uint32_t rtc0 = rtc_read32(RTC_RTC_0);
+    ASSERT_EQ(0, rtc0 & 0x3F, "RTC sec = 0 when disabled");
+    PASS();
+}
+
+/* ========================================================================
  * Main Entry Point
  * ======================================================================== */
 
@@ -3347,6 +3449,19 @@ int main(void) {
     RUN_TEST(test_timing_backward_compat);
     RUN_TEST(test_timing_stmia_ldmia_1_plus_n);
     END_CATEGORY("Cycle Timing");
+
+    BEGIN_CATEGORY("CPUID and NVIC Extensions");
+    RUN_TEST(test_cpuid_register);
+    RUN_TEST(test_nvic_iabr_read);
+    RUN_TEST(test_nvic_ipr7_readwrite);
+    END_CATEGORY("CPUID and NVIC Extensions");
+
+    BEGIN_CATEGORY("RTC Ticking");
+    RUN_TEST(test_rtc_load_and_read);
+    RUN_TEST(test_rtc_tick_seconds);
+    RUN_TEST(test_rtc_minute_rollover);
+    RUN_TEST(test_rtc_not_ticking_when_disabled);
+    END_CATEGORY("RTC Ticking");
 
     printf("\n========================================\n");
     printf(" Results: %d/%d passed, %d failed\n", tests_passed, tests_run, tests_failed);

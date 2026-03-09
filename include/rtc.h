@@ -36,6 +36,18 @@ typedef struct {
     uint32_t irq_setup_1;
     uint32_t inte;
     uint32_t intf;
+
+    /* Running time fields (loaded from SETUP on CTRL.LOAD) */
+    int year;       /* 0-4095 */
+    int month;      /* 1-12 */
+    int day;        /* 1-28/29/30/31 */
+    int dotw;       /* 0-6, 0=Sunday */
+    int hour;       /* 0-23 */
+    int min;        /* 0-59 */
+    int sec;        /* 0-59 */
+
+    /* Tick accumulator: counts timer µs, ticks seconds */
+    uint64_t tick_acc;
 } rtc_state_t;
 
 extern rtc_state_t rtc_state;
@@ -44,5 +56,8 @@ void     rtc_init(void);
 int      rtc_match(uint32_t addr);
 uint32_t rtc_read32(uint32_t offset);
 void     rtc_write32(uint32_t offset, uint32_t val);
+
+/* Called from main loop to tick RTC based on elapsed microseconds */
+void     rtc_tick(uint32_t elapsed_us);
 
 #endif /* RTC_H */

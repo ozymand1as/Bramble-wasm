@@ -17,6 +17,7 @@
 #include "timer.h"
 #include "nvic.h"
 #include "rom.h"
+#include "rtc.h"
 
 /* ========================================================================
  * Single-Core Global State
@@ -653,6 +654,7 @@ static void timing_tick(uint32_t cycles) {
     if (us > 0) {
         timing_config.cycle_accumulator -= us * timing_config.cycles_per_us;
         timer_tick(us);
+        rtc_tick(us);
     }
     /* SysTick counts in CPU cycles, not microseconds */
     systick_tick(cycles);

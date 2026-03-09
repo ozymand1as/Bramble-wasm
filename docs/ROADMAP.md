@@ -1,12 +1,12 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.21.0
+## Current State: v0.22.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | Instructions | ~75% | 65+ Thumb-1; 32-bit: BL, MSR, MRS, DSB/DMB/ISB |
 | Memory Map | ~95% | Flash + XIP aliases + XIP cache ctrl + XIP SRAM + XIP SSI + SRAM + SRAM alias + ROM (4KB) |
-| Peripherals | ~99% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx+stdin), SPI, I2C, PWM, DMA, PIO (full + clkdiv), Resets, Clocks, XOSC, PLLs, Watchdog (reboot), ADC (FIFO + round-robin), SIO divider + interpolators, USB (host enum + CDC), RTC (stub) |
+| Peripherals | ~99% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx+stdin), SPI, I2C, PWM, DMA, PIO (full + clkdiv), Resets, Clocks, XOSC, PLLs, Watchdog (reboot), ADC (FIFO + round-robin), SIO divider + interpolators, USB (host enum + CDC), RTC (ticking) |
 | Exceptions | ~90% | Entry/return, priority preemption, SysTick, PendSV, HardFault, exception nesting |
 | Boot | ~95% | Vector table + SDK boot peripherals + ROM function table + boot2 auto-detect + ROM soft-float/double |
 
@@ -178,11 +178,15 @@ on M0+. The original roadmap incorrectly listed these.
 - SIE_STATUS always returns 0 (no VBUS, not connected)
 - SDK's stdio_usb_init() times out gracefully and falls back to UART
 
-### 3.9 RTC (0x4005C000) [COMPLETE - stub]
+### 3.9 RTC (0x4005C000) [COMPLETE]
 
-- Register-level stub: CLKDIV_M1, SETUP_0/1, CTRL, IRQ registers
+- Full register-level emulation: CLKDIV_M1, SETUP_0/1, CTRL, IRQ registers
+- CTRL.LOAD strobe copies SETUP into running time fields
 - CTRL.ACTIVE reflects CTRL.ENABLE state
-- RTC_1/RTC_0 read back setup values (clock does not tick)
+- RTC_1/RTC_0 return actual running time (year/month/day/dotw/hour/min/sec)
+- Clock ticks seconds based on elapsed microseconds from timer
+- Proper calendar rollover (seconds → minutes → hours → days → months → years)
+- Leap year support
 - Atomic register aliases supported
 
 ---
@@ -298,9 +302,22 @@ on M0+. The original roadmap incorrectly listed these.
 - Enables littlefs/FAT filesystem persistence across emulator runs
 - Smart sector detection: compares 4KB sectors against erased state to identify firmware vs filesystem
 
-### 5.6 Nice to Have
+### 5.6 SCB/NVIC Extensions [COMPLETE]
 
-- RTC with actual time ticking
+- CPUID register (0xE000ED00): returns Cortex-M0+ identifier (0x410CC601)
+- NVIC_IABR (0xE000E300): interrupt active bit register read
+- IPR registers extended to full range (IPR0-7, covering all 26 IRQs)
+- All NVIC/peripheral debug printf output gated behind `-debug` flag
+
+### 5.7 RTC Time Ticking [COMPLETE]
+
+- CTRL.LOAD strobe copies SETUP_0/1 into running time fields
+- Clock ticks seconds based on elapsed microseconds (via `rtc_tick()` in timing path)
+- Full calendar rollover with leap year support
+- RTC_1/RTC_0 return packed running time instead of raw setup values
+
+### 5.8 Nice to Have
+
 - Dormant/sleep mode
 - Double-precision ROM functions (currently stubs but untested)
 - DMA pacing timers (cycle-based transfer throttling)
