@@ -2,6 +2,8 @@
 #include <string.h>
 #include "uart.h"
 #include "nvic.h"
+#include "netbridge.h"
+#include "wire.h"
 
 /* Two UART instances */
 uart_state_t uart_state[2];
@@ -166,8 +168,15 @@ void uart_write32(int uart_num, uint32_t offset, uint32_t val) {
     case UART_DR:
         u->dr = val;
         if (u->cr & UART_CR_TXE) {
-            putchar((char)(val & 0xFF));
-            fflush(stdout);
+            uint8_t ch = (uint8_t)(val & 0xFF);
+            if (net_bridge_uart_active(uart_num)) {
+                net_bridge_uart_tx(uart_num, ch);
+            } else if (wire_uart_active(uart_num)) {
+                wire_send_uart(uart_num, ch);
+            } else {
+                putchar((char)ch);
+                fflush(stdout);
+            }
         }
         break;
 

@@ -1,15 +1,17 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.25.0
+## Current State: v0.26.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | Instructions | ~75% | 65+ Thumb-1; 32-bit: BL, MSR, MRS, DSB/DMB/ISB |
 | Memory Map | ~95% | Flash + XIP aliases + XIP cache ctrl + XIP SRAM + XIP SSI + SRAM + SRAM alias + ROM (16KB) |
-| Peripherals | ~99% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx+stdin), SPI, I2C, PWM, DMA, PIO (full + clkdiv), Resets, Clocks, XOSC, PLLs, ROSC, Watchdog (reboot), ADC (FIFO + round-robin), SIO divider + interpolators, USB (host enum + CDC + multi-packet IN), RTC (ticking), SYSINFO, IO_QSPI, PADS_QSPI |
+| Peripherals | ~99% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx+stdin+TCP), SPI (FIFOs+device cb), I2C (FIFO+device cb), PWM, DMA, PIO (full + clkdiv), Resets, Clocks, XOSC, PLLs, ROSC, Watchdog (reboot), ADC (FIFO + round-robin), SIO divider + interpolators, USB (host enum + CDC + multi-packet IN), RTC (ticking), SYSINFO, IO_QSPI, PADS_QSPI |
 | Exceptions | ~90% | Entry/return, priority preemption, SysTick, PendSV, HardFault, exception nesting |
 | Boot | ~95% | Vector table + SDK boot peripherals + ROM function table + boot2 auto-detect + ROM soft-float/double |
 | Firmware | MicroPython + CircuitPython | MicroPython v1.27.0 REPL + CircuitPython 10.1.3 code.py via USB CDC |
+| Networking | UART-to-TCP | Bridge UART to TCP server/client for remote serial access |
+| Multi-Device | Wire protocol | Unix socket IPC for UART/GPIO between Bramble instances |
 
 ---
 
@@ -121,14 +123,19 @@ on M0+. The original roadmap incorrectly listed these.
 ~~Data register read/write with simple FIFO~~
 - PL022 module with register state (CR0, CR1, CPSR, IMSC, RIS, DMACR)
 - Both SPI0 and SPI1 with independent state
-- Status register (TFE, TNF), PL022 peripheral ID
+- 8-deep TX/RX FIFOs, full status register (TFE, TNF, RNE, RFF, BSY)
+- Device callback interface for external hardware models
+- TX/RX interrupt at half-full thresholds, PL022 peripheral ID
 - Atomic register aliases
 
 ### 3.3 I2C Full (0x40044000 / 0x40048000) [COMPLETE]
 ~~Target address, data register, status~~
 - DW_apb_i2c module with full register set (CON, TAR, SAR, SCL timing, ENABLE, etc.)
 - Both I2C0 and I2C1 with independent state
-- Status register (TFE, TFNF), component ID registers
+- 16-deep RX FIFO, proper DATA_CMD read/write/stop/restart handling
+- Device callback interface: multiple devices per bus (up to 8, addressed by 7-bit addr)
+- RX_FULL/TX_EMPTY/STOP_DET interrupts, CLR_* registers
+- Status register (TFE, TFNF, RFNE, RFF), component ID registers
 - Atomic register aliases
 
 ### 3.4 PWM (0x40050000) [COMPLETE]
@@ -345,6 +352,50 @@ on M0+. The original roadmap incorrectly listed these.
 - Dormant/sleep mode
 - Double-precision ROM functions (currently stubs but untested)
 - DMA pacing timers (cycle-based transfer throttling)
+
+---
+
+## Phase 6: Connectivity & Multi-Device (Community Features)
+
+### 6.1 UART-to-TCP Network Bridge [COMPLETE]
+
+- `-net-uart0 <port>` / `-net-uart1 <port>`: Bridge UART to TCP server socket
+- `-net-uart0-connect <host:port>` / `-net-uart1-connect <host:port>`: TCP client mode
+- Non-blocking I/O with TCP_NODELAY for low-latency byte-at-a-time transfer
+- Automatic client accept/disconnect; reconnection in listen mode
+- UART TX routed through bridge when active (instead of stdout)
+
+### 6.2 SPI Device Callback Interface [COMPLETE]
+
+- 8-deep TX/RX FIFOs (PL022 spec-compliant)
+- `spi_attach_device(spi_num, xfer_fn, cs_fn, ctx)` API
+- Full-duplex byte exchange: SSPDR write triggers device callback, response pushed to RX FIFO
+- TX/RX interrupt generation at half-full thresholds
+- Status register reflects actual FIFO state
+
+### 6.3 I2C Device Callback Interface [COMPLETE]
+
+- 16-deep RX FIFO (DW_apb_i2c spec-compliant)
+- `i2c_attach_device(i2c_num, addr, write_fn, read_fn, start_fn, stop_fn, ctx)` API
+- Multiple devices per bus (up to 8) addressed by 7-bit I2C address
+- DATA_CMD read/write/stop/restart bits processed immediately
+- Proper interrupt generation (RX_FULL, TX_EMPTY, STOP_DET) and CLR registers
+
+### 6.4 Multi-Instance Wire Protocol [COMPLETE]
+
+- `-wire-uart0 <path>` / `-wire-uart1 <path>`: Wire UART between Bramble instances
+- `-wire-gpio <path>`: Wire GPIO pin state between instances
+- Unix domain socket IPC; first instance creates, second connects
+- UART TX on one instance delivered as UART RX on the other
+- GPIO pin changes propagated between instances
+- Wire message protocol: 4-byte header + payload (UART_DATA, GPIO_PIN, SPI_XFER)
+
+### 6.5 Future: Device Plugins
+
+- Community-contributed device models (sensors, displays, flash, Ethernet)
+- SPI devices: W5500 (Ethernet), SD card, SPI flash, OLED displays
+- I2C devices: BME280/BMP280, MPU6050, EEPROM, RTC modules
+- Each device is a self-contained `.c` file implementing the callback interface
 
 ---
 

@@ -2,9 +2,9 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.25.0
+## Current Status: v0.26.0
 
-237 tests passing. Boots and runs Pico SDK firmware including **MicroPython v1.27.0** and **CircuitPython 10.1.3** with USB CDC REPL. Full peripheral emulation, USB host enumeration simulation, and flash filesystem persistence.
+237 tests passing. Boots and runs Pico SDK firmware including **MicroPython v1.27.0** and **CircuitPython 10.1.3** with USB CDC REPL. Full peripheral emulation, USB host enumeration simulation, flash filesystem persistence, UART-to-TCP networking, SPI/I2C device callbacks, and multi-instance wiring.
 
 ### Coverage
 
@@ -26,8 +26,8 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 |------------|---------|-----------------|
 | GPIO | `0x40014000` / `0xD0000000` | Full (30 pins, SIO, IO_BANK0, PADS, edge/level interrupts) |
 | UART | `0x40034000` / `0x40038000` | Full (dual PL011, Tx+Rx, 16-deep FIFO, stdin polling) |
-| SPI | `0x4003C000` / `0x40040000` | Registers (dual PL022, status, peripheral ID) |
-| I2C | `0x40044000` / `0x40048000` | Registers (dual DW_apb_i2c, status, component ID) |
+| SPI | `0x4003C000` / `0x40040000` | Full (dual PL022, 8-deep TX/RX FIFOs, device callbacks) |
+| I2C | `0x40044000` / `0x40048000` | Full (dual DW_apb_i2c, 16-deep RX FIFO, device callbacks) |
 | Timer | `0x40054000` | Full (64-bit counter, 4 alarms, interrupts) |
 | PWM | `0x40050000` | Full (8 slices, CSR/DIV/CTR/CC/TOP, interrupts) |
 | ADC | `0x4004C000` | Full (5 channels, temp sensor, FIFO, round-robin) |
@@ -195,6 +195,30 @@ Bramble now supports flexible debug output modes:
 ./bramble firmware.uf2 -clock 125      # Real RP2040 timing (125 MHz)
 ./bramble firmware.uf2 -flash fs.bin   # Persistent flash storage
 ./bramble firmware.uf2 -debug-mem      # Log unmapped peripheral access
+```
+
+**Networking (UART-to-TCP bridge):**
+
+```bash
+# Bridge UART0 to TCP port (connect with nc, minicom, etc.)
+./bramble firmware.uf2 -net-uart0 9999 -stdin
+# In another terminal: nc localhost 9999
+
+# Connect UART0 to a remote host
+./bramble firmware.uf2 -net-uart0-connect 192.168.1.10:9999
+```
+
+**Multi-Device Wiring (inter-instance communication):**
+
+```bash
+# Terminal 1: Instance A with UART0 wired via Unix socket
+./bramble fw_sensor.uf2 -wire-uart0 /tmp/uart_link.sock -stdin
+
+# Terminal 2: Instance B with UART0 wired to the same socket
+./bramble fw_controller.uf2 -wire-uart0 /tmp/uart_link.sock -stdin
+
+# UART TX on either side arrives as UART RX on the other
+# GPIO pins can also be wired: -wire-gpio /tmp/gpio_link.sock
 ```
 
 **MicroPython REPL:**

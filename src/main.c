@@ -36,6 +36,8 @@
 #include "gdb.h"
 #include "usb.h"
 #include "rtc.h"
+#include "netbridge.h"
+#include "wire.h"
 
 
 int any_core_running(void);
@@ -105,6 +107,15 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -no-boot2  Skip boot2 even if detected in firmware\n");
         fprintf(stderr, "  -debug-mem Log unmapped peripheral accesses\n");
         fprintf(stderr, "  -flash <path> Persistent flash storage (2MB file)\n");
+        fprintf(stderr, "\nNetworking:\n");
+        fprintf(stderr, "  -net-uart0 <port>           Bridge UART0 to TCP server on port\n");
+        fprintf(stderr, "  -net-uart1 <port>           Bridge UART1 to TCP server on port\n");
+        fprintf(stderr, "  -net-uart0-connect <h:p>    Connect UART0 to remote host:port\n");
+        fprintf(stderr, "  -net-uart1-connect <h:p>    Connect UART1 to remote host:port\n");
+        fprintf(stderr, "\nMulti-Device Wiring:\n");
+        fprintf(stderr, "  -wire-uart0 <path>          Wire UART0 to peer via Unix socket\n");
+        fprintf(stderr, "  -wire-uart1 <path>          Wire UART1 to peer via Unix socket\n");
+        fprintf(stderr, "  -wire-gpio <path>           Wire GPIO pins to peer via Unix socket\n");
         return EXIT_FAILURE;
     }
 
@@ -146,6 +157,52 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "-flash") == 0) {
             if (i + 1 < argc) {
                 flash_path = argv[++i];
+            }
+        } else if (strcmp(argv[i], "-net-uart0") == 0) {
+            if (i + 1 < argc) {
+                net_bridge.uart[0].mode = NET_MODE_LISTEN;
+                net_bridge.uart[0].port = atoi(argv[++i]);
+            }
+        } else if (strcmp(argv[i], "-net-uart1") == 0) {
+            if (i + 1 < argc) {
+                net_bridge.uart[1].mode = NET_MODE_LISTEN;
+                net_bridge.uart[1].port = atoi(argv[++i]);
+            }
+        } else if (strcmp(argv[i], "-net-uart0-connect") == 0) {
+            if (i + 1 < argc) {
+                char *arg = argv[++i];
+                char *colon = strrchr(arg, ':');
+                if (colon) {
+                    *colon = '\0';
+                    strncpy(net_bridge.uart[0].host, arg, sizeof(net_bridge.uart[0].host) - 1);
+                    net_bridge.uart[0].remote_port = atoi(colon + 1);
+                    net_bridge.uart[0].mode = NET_MODE_CONNECT;
+                    *colon = ':';
+                }
+            }
+        } else if (strcmp(argv[i], "-net-uart1-connect") == 0) {
+            if (i + 1 < argc) {
+                char *arg = argv[++i];
+                char *colon = strrchr(arg, ':');
+                if (colon) {
+                    *colon = '\0';
+                    strncpy(net_bridge.uart[1].host, arg, sizeof(net_bridge.uart[1].host) - 1);
+                    net_bridge.uart[1].remote_port = atoi(colon + 1);
+                    net_bridge.uart[1].mode = NET_MODE_CONNECT;
+                    *colon = ':';
+                }
+            }
+        } else if (strcmp(argv[i], "-wire-uart0") == 0) {
+            if (i + 1 < argc) {
+                wire_add_link(argv[++i], WIRE_MSG_UART_DATA, 0);
+            }
+        } else if (strcmp(argv[i], "-wire-uart1") == 0) {
+            if (i + 1 < argc) {
+                wire_add_link(argv[++i], WIRE_MSG_UART_DATA, 1);
+            }
+        } else if (strcmp(argv[i], "-wire-gpio") == 0) {
+            if (i + 1 < argc) {
+                wire_add_link(argv[++i], WIRE_MSG_GPIO_PIN, 0);
             }
         }
     }
@@ -258,6 +315,18 @@ int main(int argc, char **argv) {
         fprintf(stderr,"[Init] Stdin polling enabled for UART0 Rx\n");
     }
 
+    /* Network bridge initialization */
+    if (net_bridge_init() < 0) {
+        fprintf(stderr, "[Error] Failed to initialize network bridge\n");
+        return EXIT_FAILURE;
+    }
+
+    /* Wire protocol initialization */
+    if (wire_init() < 0) {
+        fprintf(stderr, "[Error] Failed to initialize wire protocol\n");
+        return EXIT_FAILURE;
+    }
+
     fprintf(stderr,"[Boot] Starting Core 0 from flash...\n");
     cpu_reset_core(CORE0);
     fprintf(stderr,"[Boot] Core 0 SP = 0x%08X\n", cores[CORE0].r[13]);
@@ -309,8 +378,12 @@ int main(int argc, char **argv) {
         /* Poll stdin for UART Rx data every 1024 steps */
         if (stdin_enabled && (step_count & 0x3FF) == 0) {
             uart_stdin_poll();
-            /* Also push stdin bytes to USB CDC if enumerated */
-            /* (uart_stdin_poll already handles UART; USB CDC uses same stdin) */
+        }
+
+        /* Poll network bridges and wire links every 1024 steps */
+        if ((step_count & 0x3FF) == 0) {
+            net_bridge_poll();
+            wire_poll();
         }
 
         if (show_status && (step_count % 1000 == 0)) {
@@ -361,6 +434,9 @@ int main(int argc, char **argv) {
     if (stdin_enabled) {
         uart_stdin_cleanup();
     }
+
+    net_bridge_cleanup();
+    wire_cleanup();
 
     /* Save flash to file if persistence enabled */
     if (flash_path) {

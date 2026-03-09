@@ -36,6 +36,8 @@ set(SOURCES
     src/gdb.c
     src/usb.c
     src/rtc.c
+    src/netbridge.c
+    src/wire.c
 )
 
 # Executable
@@ -66,6 +68,8 @@ set(LIB_SOURCES
     src/pio.c
     src/usb.c
     src/rtc.c
+    src/netbridge.c
+    src/wire.c
 )
 
 # Test executable

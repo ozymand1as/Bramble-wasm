@@ -1,5 +1,59 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.26.0] - 2026-03-09
+
+### Added - Networking, Device Callbacks, Multi-Instance Wiring
+
+**UART-to-TCP Network Bridge:**
+
+- `-net-uart0 <port>` / `-net-uart1 <port>`: Bridge UART to TCP server socket
+- `-net-uart0-connect <host:port>`: Connect UART to remote TCP host
+- Non-blocking I/O with TCP_NODELAY for low-latency serial communication
+- Automatic client accept/disconnect handling in server mode
+- New module: `netbridge.c` / `netbridge.h`
+
+**SPI Functional Upgrade:**
+
+- 8-deep TX/RX FIFOs (PL022 spec-compliant)
+- Device callback interface: `spi_attach_device(spi_num, xfer_fn, cs_fn, ctx)`
+- Full-duplex byte exchange through attached device on SSPDR write
+- TX/RX interrupt generation at half-full thresholds
+- Status register reflects actual FIFO state (TFE, TNF, RNE, RFF, BSY)
+
+**I2C Functional Upgrade:**
+
+- 16-deep RX FIFO (DW_apb_i2c spec-compliant)
+- Device callback interface: `i2c_attach_device(i2c_num, addr, write_fn, read_fn, start_fn, stop_fn, ctx)`
+- Multiple devices per bus (up to 8), addressed by 7-bit I2C address
+- DATA_CMD read/write/stop/restart bits processed immediately
+- RX_FULL/TX_EMPTY/STOP_DET interrupt generation
+- Proper CLR_* registers for individual interrupt clearing
+
+**Multi-Instance Wire Protocol:**
+
+- `-wire-uart0 <path>` / `-wire-uart1 <path>`: Wire UART between two Bramble instances
+- `-wire-gpio <path>`: Wire GPIO pins between instances
+- Unix domain socket IPC with auto server/client negotiation
+- First instance creates socket, second connects; both become peers
+- UART TX on one instance arrives as UART RX on the other
+- GPIO pin changes propagated between instances
+- New module: `wire.c` / `wire.h`
+
+### Files Added
+
+- `include/netbridge.h` + `src/netbridge.c` - UART-to-TCP bridge
+- `include/wire.h` + `src/wire.c` - Multi-instance wire protocol
+
+### Files Modified
+
+- `include/spi.h` + `src/spi.c` - Rewritten with FIFOs and device callbacks
+- `include/i2c.h` + `src/i2c.c` - Rewritten with RX FIFO and device callbacks
+- `src/uart.c` - TX routing through net bridge, wire, or stdout
+- `src/main.c` - CLI flags, init/cleanup/poll for net bridge and wire
+- `CMakeLists.txt` - Added netbridge.c and wire.c
+
+---
+
 ## [0.25.0] - 2026-03-09
 
 ### Added - CircuitPython Support
