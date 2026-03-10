@@ -16,6 +16,7 @@
 #include "pio.h"
 #include "usb.h"
 #include "rtc.h"
+#include "gdb.h"
 
 /* ========================================================================
  * XIP Cache Control State (0x14000000)
@@ -918,6 +919,8 @@ static uint32_t sio_read32(uint32_t offset) {
  * ======================================================================== */
 
 void mem_write32(uint32_t addr, uint32_t val) {
+    gdb_check_watchpoint_write(addr, 4);
+
     /* SRAM alias translation (0x21xxxxxx -> 0x20xxxxxx) */
     addr = sram_alias_translate(addr);
 
@@ -964,6 +967,7 @@ void mem_write32(uint32_t addr, uint32_t val) {
     if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
         uint32_t offset = addr - active_ram_base;
         memcpy(&get_ram()[offset], &val, 4);
+        icache_invalidate_addr(addr);
         return;
     }
 
@@ -1215,6 +1219,7 @@ void mem_write32(uint32_t addr, uint32_t val) {
 }
 
 void mem_write16(uint32_t addr, uint16_t val) {
+    gdb_check_watchpoint_write(addr, 2);
     addr = sram_alias_translate(addr);
 
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
@@ -1231,6 +1236,7 @@ void mem_write16(uint32_t addr, uint16_t val) {
     if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
         uint32_t offset = addr - active_ram_base;
         memcpy(&get_ram()[offset], &val, 2);
+        icache_invalidate_addr(addr);
         return;
     }
 
@@ -1270,6 +1276,7 @@ void mem_write16(uint32_t addr, uint16_t val) {
 }
 
 void mem_write8(uint32_t addr, uint8_t val) {
+    gdb_check_watchpoint_write(addr, 1);
     addr = sram_alias_translate(addr);
 
     if (addr >= FLASH_BASE && addr < FLASH_BASE + FLASH_SIZE) {
@@ -1284,6 +1291,7 @@ void mem_write8(uint32_t addr, uint8_t val) {
 
     if (addr >= active_ram_base && addr < active_ram_base + active_ram_size) {
         get_ram()[addr - active_ram_base] = val;
+        icache_invalidate_addr(addr);
         return;
     }
 
@@ -1323,6 +1331,7 @@ void mem_write8(uint32_t addr, uint8_t val) {
 }
 
 uint32_t mem_read32(uint32_t addr) {
+    gdb_check_watchpoint_read(addr, 4);
     /* SRAM alias translation */
     addr = sram_alias_translate(addr);
 
@@ -1519,6 +1528,7 @@ uint32_t mem_read32(uint32_t addr) {
 }
 
 uint16_t mem_read16(uint32_t addr) {
+    gdb_check_watchpoint_read(addr, 2);
     addr = sram_alias_translate(addr);
 
     /* ROM */
@@ -1576,6 +1586,7 @@ uint16_t mem_read16(uint32_t addr) {
 }
 
 uint8_t mem_read8(uint32_t addr) {
+    gdb_check_watchpoint_read(addr, 1);
     addr = sram_alias_translate(addr);
 
     /* ROM */

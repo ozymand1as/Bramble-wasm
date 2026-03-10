@@ -43,6 +43,7 @@
 #include "emmc.h"
 #include "fuse_mount.h"
 #include "corepool.h"
+#include "cyw43.h"
 
 
 int any_core_running(void);
@@ -130,6 +131,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -wire-uart0 <path>          Wire UART0 to peer via Unix socket\n");
         fprintf(stderr, "  -wire-uart1 <path>          Wire UART1 to peer via Unix socket\n");
         fprintf(stderr, "  -wire-gpio <path>           Wire GPIO pins to peer via Unix socket\n");
+        fprintf(stderr, "\nWiFi (Pico W):\n");
+        fprintf(stderr, "  -wifi                       Enable CYW43 WiFi chip emulation\n");
         return EXIT_FAILURE;
     }
 
@@ -274,6 +277,8 @@ int main(int argc, char **argv) {
             if (i + 1 < argc) {
                 wire_add_link(argv[++i], WIRE_MSG_GPIO_PIN, 0);
             }
+        } else if (strcmp(argv[i], "-wifi") == 0) {
+            cyw43.enabled = 1;
         }
     }
 
@@ -316,6 +321,12 @@ int main(int argc, char **argv) {
     adc_init();
     usb_init();
     rtc_init();
+
+    /* Initialize CYW43 WiFi emulation if enabled */
+    if (cyw43.enabled) {
+        cyw43_init();
+        fprintf(stderr, "[WiFi] CYW43439 emulation enabled\n");
+    }
 
     int loaded = 0;
     size_t path_len = strlen(firmware_path);
@@ -558,11 +569,22 @@ int main(int argc, char **argv) {
         /* ====== Cooperative execution: original single-threaded round-robin ====== */
         while (any_core_running()) {
 
-            /* GDB: check for breakpoint or single-step before executing */
-            if (gdb_enabled && gdb.active && gdb_should_stop(cores[CORE0].r[15])) {
-                int result = gdb_handle();
-                if (result < 0) {
-                    gdb_enabled = 0;  /* Detached or killed */
+            /* GDB: check for breakpoint/watchpoint on both cores */
+            if (gdb_enabled && gdb.active) {
+                int should_stop = 0;
+                for (int gc = 0; gc < num_active_cores; gc++) {
+                    if (!cores[gc].is_halted &&
+                        gdb_should_stop(cores[gc].r[15], gc)) {
+                        gdb.stop_core = gc;
+                        should_stop = 1;
+                        break;
+                    }
+                }
+                if (should_stop) {
+                    int result = gdb_handle();
+                    if (result < 0) {
+                        gdb_enabled = 0;  /* Detached or killed */
+                    }
                 }
             }
 

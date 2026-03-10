@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include "pio.h"
 #include "gpio.h"
+#include "cyw43.h"
 
 pio_block_t pio_state[PIO_NUM_BLOCKS];
 
@@ -604,6 +605,16 @@ uint32_t pio_read32(int pio_num, uint32_t offset) {
         /* Build FSTAT from actual FIFO state */
         uint32_t fstat = 0;
         for (int sm = 0; sm < PIO_NUM_SM; sm++) {
+            /* CYW43 intercept: PIO0 SM0 reports virtual FIFO status */
+            if (cyw43.enabled && pio_num == 0 && sm == 0) {
+                /* TX always accepts (never full, always "empty" for writes) */
+                fstat |= (1u << (PIO_FSTAT_TXEMPTY_SHIFT + sm));
+                /* RX has data when in read phase */
+                if (!cyw43_pio_rx_ready()) {
+                    fstat |= (1u << (PIO_FSTAT_RXEMPTY_SHIFT + sm));
+                }
+                continue;
+            }
             if (fifo_full(&p->sm[sm].tx_fifo))
                 fstat |= (1u << (PIO_FSTAT_TXFULL_SHIFT + sm));
             if (fifo_empty(&p->sm[sm].tx_fifo))
@@ -637,6 +648,10 @@ uint32_t pio_read32(int pio_num, uint32_t offset) {
     /* RX FIFOs: pop from SM's RX FIFO */
     case PIO_RXF0: case PIO_RXF1: case PIO_RXF2: case PIO_RXF3: {
         int sm = (offset - PIO_RXF0) / 4;
+        /* CYW43 WiFi intercept: PIO0 SM0 RX returns gSPI response */
+        if (cyw43.enabled && pio_num == 0 && sm == 0) {
+            return cyw43_pio_rx_read();
+        }
         uint32_t val = 0;
         fifo_pop(&p->sm[sm].rx_fifo, &val);
         return val;
@@ -758,6 +773,11 @@ void pio_write32(int pio_num, uint32_t offset, uint32_t val) {
     /* TX FIFOs: push into SM's TX FIFO */
     case PIO_TXF0: case PIO_TXF1: case PIO_TXF2: case PIO_TXF3: {
         int sm = (offset - PIO_TXF0) / 4;
+        /* CYW43 WiFi intercept: PIO0 SM0 TX triggers gSPI processing */
+        if (cyw43.enabled && pio_num == 0 && sm == 0) {
+            cyw43_pio_tx_write(val);
+            break;
+        }
         fifo_push(&p->sm[sm].tx_fifo, val);
         break;
     }

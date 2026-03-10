@@ -178,6 +178,60 @@ typedef void (*thumb_handler_t)(uint16_t);
 static thumb_handler_t dispatch_table[256];
 static int dispatch_initialized = 0;
 
+/* ========================================================================
+ * Decoded Instruction Cache
+ *
+ * Direct-mapped cache that stores decoded handler pointers for 16-bit Thumb
+ * instructions. Avoids mem_read16 + dispatch_table lookup on cache hits.
+ * Indexed by (pc >> 1) & (ICACHE_SIZE - 1). Invalidated on RAM writes.
+ * ======================================================================== */
+
+#define ICACHE_SIZE     65536  /* 64K entries, power of 2 */
+#define ICACHE_MASK     (ICACHE_SIZE - 1)
+#define ICACHE_TAG_EMPTY 0xFFFFFFFF
+
+typedef struct {
+    uint32_t pc;            /* Full PC (tag + index) */
+    uint16_t instr;         /* Raw 16-bit instruction */
+    thumb_handler_t handler; /* Decoded handler */
+} icache_entry_t;
+
+static icache_entry_t icache[ICACHE_SIZE];
+static int icache_enabled = 0;
+static uint64_t icache_hits = 0;
+static uint64_t icache_misses = 0;
+
+void icache_init(void) {
+    for (int i = 0; i < ICACHE_SIZE; i++) {
+        icache[i].pc = ICACHE_TAG_EMPTY;
+    }
+    icache_hits = 0;
+    icache_misses = 0;
+    icache_enabled = 1;
+}
+
+void icache_invalidate_addr(uint32_t addr) {
+    if (!icache_enabled) return;
+    uint32_t idx = (addr >> 1) & ICACHE_MASK;
+    icache[idx].pc = ICACHE_TAG_EMPTY;
+    /* Also invalidate the adjacent entry (instruction could straddle) */
+    icache[(idx + 1) & ICACHE_MASK].pc = ICACHE_TAG_EMPTY;
+}
+
+void icache_invalidate_range(uint32_t addr, uint32_t size) {
+    if (!icache_enabled) return;
+    for (uint32_t a = addr; a < addr + size; a += 2) {
+        uint32_t idx = (a >> 1) & ICACHE_MASK;
+        icache[idx].pc = ICACHE_TAG_EMPTY;
+    }
+}
+
+void icache_invalidate_all(void) {
+    for (int i = 0; i < ICACHE_SIZE; i++) {
+        icache[i].pc = ICACHE_TAG_EMPTY;
+    }
+}
+
 /* Secondary dispatchers for ALU block (0x40-0x43) */
 static void dispatch_alu_40(uint16_t instr) {
     switch ((instr >> 6) & 0x3) {
@@ -444,6 +498,9 @@ void cpu_init(void) {
         init_dispatch_table();
         dispatch_initialized = 1;
     }
+
+    /* Initialize decoded instruction cache */
+    icache_init();
 }
 
 void cpu_reset_from_flash(void) {
@@ -712,7 +769,24 @@ void cpu_step(void) {
         return;
     }
 
-    uint16_t instr = mem_read16(pc);
+    /* Instruction fetch (with cache for 16-bit Thumb) */
+    uint16_t instr;
+    thumb_handler_t cached_handler = NULL;
+
+    if (icache_enabled) {
+        uint32_t idx = (pc >> 1) & ICACHE_MASK;
+        icache_entry_t *entry = &icache[idx];
+        if (entry->pc == pc) {
+            instr = entry->instr;
+            cached_handler = entry->handler;
+            icache_hits++;
+        } else {
+            instr = mem_read16(pc);
+            icache_misses++;
+        }
+    } else {
+        instr = mem_read16(pc);
+    }
     cpu.step_count++;
 
     if (cpu.debug_enabled) {
@@ -829,9 +903,22 @@ void cpu_step(void) {
         }
     }
 
-    /* 16-bit instruction dispatch via table */
+    /* 16-bit instruction dispatch via table (with cache) */
     pc_updated = 0;
-    dispatch_table[instr >> 8](instr);
+    thumb_handler_t handler;
+    if (cached_handler) {
+        handler = cached_handler;
+    } else {
+        handler = dispatch_table[instr >> 8];
+        /* Populate cache for this PC */
+        if (icache_enabled) {
+            uint32_t idx = (pc >> 1) & ICACHE_MASK;
+            icache[idx].pc = pc;
+            icache[idx].instr = instr;
+            icache[idx].handler = handler;
+        }
+    }
+    handler(instr);
 
     if (!pc_updated) {
         cpu.r[15] = pc + 2;
@@ -881,6 +968,9 @@ void dual_core_init(void) {
 
     fprintf(stderr, "[Boot] Firmware in shared flash (%u bytes), SRAM shared across both cores (%u bytes)\n",
            FLASH_SIZE, RAM_SIZE);
+
+    /* Reset instruction cache */
+    icache_invalidate_all();
 
     /* Read vector table from flash */
     uint32_t vector_table = FLASH_BASE + 0x100;

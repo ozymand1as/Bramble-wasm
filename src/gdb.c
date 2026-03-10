@@ -4,24 +4,27 @@
  * Implements the GDB RSP over TCP for debugging firmware in the emulator.
  * Connects to GDB via: target remote :<port>
  *
+ * Features:
+ *   - Dual-core debugging (Thread 1 = Core 0, Thread 2 = Core 1)
+ *   - Software/hardware breakpoints with optional conditions
+ *   - Write/read/access watchpoints (Z2/Z3/Z4)
+ *   - Monitor commands for conditional breakpoints
+ *
  * Supported commands:
- *   ?        - Halt reason (SIGTRAP)
- *   g        - Read all registers (R0-R15 + xPSR, 17 regs)
- *   G        - Write all registers
- *   p n      - Read register n
- *   P n=val  - Write register n
- *   m addr,len - Read memory
+ *   ?           - Halt reason
+ *   g / G       - Read/write all registers (selected thread)
+ *   p n / P n=v - Read/write single register
+ *   m addr,len  - Read memory
  *   M addr,len:data - Write memory
- *   c        - Continue execution
- *   s        - Single step
- *   Z0,addr,kind - Set software breakpoint
- *   z0,addr,kind - Remove software breakpoint
- *   Z1,addr,kind - Set hardware breakpoint
- *   z1,addr,kind - Remove hardware breakpoint
- *   D        - Detach
- *   k        - Kill
- *   qSupported - Feature query
- *   qAttached  - Attached query
+ *   c / s       - Continue / single step
+ *   Z0-Z4       - Set breakpoint/watchpoint
+ *   z0-z4       - Remove breakpoint/watchpoint
+ *   Hg/Hc       - Set thread for register/continue ops
+ *   vCont       - Extended continue/step
+ *   qSupported  - Feature query
+ *   qfThreadInfo / qsThreadInfo - Thread enumeration
+ *   qRcmd       - Monitor commands
+ *   D / k       - Detach / kill
  */
 
 #include <stdio.h>
@@ -93,6 +96,25 @@ static uint32_t hex_le_to_u32(const char *s) {
     return val;
 }
 
+/* Decode hex-encoded string in-place: "48656C6C6F" -> "Hello" */
+static int hex_decode(const char *hex, char *out, int max_len) {
+    int i = 0;
+    while (hex[i * 2] && hex[i * 2 + 1] && i < max_len - 1) {
+        out[i] = (char)hex_byte(hex + i * 2);
+        i++;
+    }
+    out[i] = '\0';
+    return i;
+}
+
+/* Encode string as hex: "Hello" -> "48656C6C6F" */
+static void hex_encode(const char *str, char *out) {
+    for (int i = 0; str[i]; i++) {
+        u8_to_hex((uint8_t)str[i], out + i * 2);
+    }
+    out[strlen(str) * 2] = '\0';
+}
+
 /* ========================================================================
  * Packet I/O
  * ======================================================================== */
@@ -126,26 +148,30 @@ static int gdb_send_packet(const char *data) {
     return gdb_send_raw(buf, pos);
 }
 
+/* Send an 'O' packet (console output to GDB, hex-encoded) */
+static void gdb_send_output(const char *msg) {
+    char buf[4096];
+    buf[0] = 'O';
+    hex_encode(msg, buf + 1);
+    gdb_send_packet(buf);
+}
+
 static int gdb_recv_packet(char *out, int max_len) {
     char buf[8192];
     int total = 0;
 
-    /* Read until we get a complete packet: $data#xx */
     while (1) {
         int n = read(gdb.client_fd, buf + total, sizeof(buf) - total - 1);
         if (n <= 0) return -1;
         total += n;
         buf[total] = '\0';
 
-        /* Look for packet start */
         char *start = strchr(buf, '$');
         if (!start) {
-            /* Handle interrupt (Ctrl-C = 0x03) */
             for (int i = 0; i < total; i++) {
                 if (buf[i] == 0x03) {
                     out[0] = 0x03;
                     out[1] = '\0';
-                    /* Send ACK */
                     gdb_send_raw("+", 1);
                     return 1;
                 }
@@ -154,16 +180,12 @@ static int gdb_recv_packet(char *out, int max_len) {
             continue;
         }
 
-        /* Look for packet end */
         char *end = strchr(start, '#');
         if (end && (end - buf + 2) < total) {
-            /* Extract data between $ and # */
             int data_len = end - start - 1;
             if (data_len >= max_len) data_len = max_len - 1;
             memcpy(out, start + 1, data_len);
             out[data_len] = '\0';
-
-            /* Send ACK */
             gdb_send_raw("+", 1);
             return data_len;
         }
@@ -171,24 +193,71 @@ static int gdb_recv_packet(char *out, int max_len) {
 }
 
 /* ========================================================================
- * Register Access (ARM Cortex-M0+ register layout for GDB)
+ * Register Access - Dual-Core Aware
  *
- * GDB expects: R0-R12, SP(R13), LR(R14), PC(R15), xPSR
- * Total: 17 registers, 32 bits each
+ * Reads/writes from cores[gdb.g_thread] instead of global cpu state.
  * ======================================================================== */
 
 static uint32_t gdb_read_reg(int reg) {
-    if (reg >= 0 && reg <= 15) return cpu.r[reg];
-    if (reg == 16) return cpu.xpsr;  /* CPSR/xPSR */
+    int core = gdb.g_thread;
+    if (core < 0 || core >= NUM_CORES) core = 0;
+    if (reg >= 0 && reg <= 15) return cores[core].r[reg];
+    if (reg == 16) return cores[core].xpsr;
     return 0;
 }
 
 static void gdb_write_reg(int reg, uint32_t val) {
-    if (reg >= 0 && reg <= 15) cpu.r[reg] = val;
-    if (reg == 16) cpu.xpsr = val;
+    int core = gdb.g_thread;
+    if (core < 0 || core >= NUM_CORES) core = 0;
+    if (reg >= 0 && reg <= 15) cores[core].r[reg] = val;
+    if (reg == 16) cores[core].xpsr = val;
 }
 
 #define GDB_NUM_REGS 17
+
+/* ========================================================================
+ * Condition Evaluation
+ * ======================================================================== */
+
+static int gdb_eval_condition(const gdb_condition_t *cond, int core_id) {
+    if (cond->type == GDB_COND_NONE) return 1; /* No condition = always stop */
+
+    uint32_t lhs;
+    switch (cond->type) {
+    case GDB_COND_REG_EQ:
+    case GDB_COND_REG_NE:
+    case GDB_COND_REG_LT:
+    case GDB_COND_REG_GT:
+        if (cond->reg_num <= 15)
+            lhs = cores[core_id].r[cond->reg_num];
+        else if (cond->reg_num == 16)
+            lhs = cores[core_id].xpsr;
+        else
+            return 1;
+        break;
+    case GDB_COND_MEM_EQ:
+    case GDB_COND_MEM_NE:
+        lhs = mem_read32(cond->addr);
+        break;
+    default:
+        return 1;
+    }
+
+    switch (cond->type) {
+    case GDB_COND_REG_EQ:
+    case GDB_COND_MEM_EQ:
+        return lhs == cond->value;
+    case GDB_COND_REG_NE:
+    case GDB_COND_MEM_NE:
+        return lhs != cond->value;
+    case GDB_COND_REG_LT:
+        return lhs < cond->value;
+    case GDB_COND_REG_GT:
+        return lhs > cond->value;
+    default:
+        return 1;
+    }
+}
 
 /* ========================================================================
  * Command Handlers
@@ -196,19 +265,148 @@ static void gdb_write_reg(int reg, uint32_t val) {
 
 static void handle_query(const char *pkt) {
     if (strncmp(pkt, "qSupported", 10) == 0) {
-        gdb_send_packet("PacketSize=4096;swbreak+;hwbreak+");
+        gdb_send_packet("PacketSize=4096;swbreak+;hwbreak+;multiprocess-");
     } else if (strncmp(pkt, "qAttached", 9) == 0) {
-        gdb_send_packet("1");  /* Attached to existing process */
+        gdb_send_packet("1");
     } else if (strncmp(pkt, "qC", 2) == 0) {
-        gdb_send_packet("QC1");  /* Current thread = 1 */
+        /* Current thread = core that stopped + 1 (1-based) */
+        char resp[16];
+        snprintf(resp, sizeof(resp), "QC%d", gdb.stop_core + 1);
+        gdb_send_packet(resp);
     } else if (strncmp(pkt, "qfThreadInfo", 12) == 0) {
-        gdb_send_packet("m1");   /* Thread 1 */
+        /* Report both cores as threads */
+        if (num_active_cores > 1)
+            gdb_send_packet("m1,2");
+        else
+            gdb_send_packet("m1");
     } else if (strncmp(pkt, "qsThreadInfo", 12) == 0) {
-        gdb_send_packet("l");    /* End of thread list */
+        gdb_send_packet("l");  /* End of thread list */
     } else if (strncmp(pkt, "qTStatus", 8) == 0) {
-        gdb_send_packet("");     /* No trace running */
+        gdb_send_packet("");
+    } else if (strncmp(pkt, "qRcmd,", 6) == 0) {
+        /* Monitor command: hex-encoded string */
+        char cmd[256];
+        hex_decode(pkt + 6, cmd, sizeof(cmd));
+
+        /* Parse monitor commands */
+        if (strncmp(cmd, "help", 4) == 0) {
+            gdb_send_output("Monitor commands:\n");
+            gdb_send_output("  monitor info break      - List breakpoints\n");
+            gdb_send_output("  monitor info watch      - List watchpoints\n");
+            gdb_send_output("  monitor cond <N> r<R>==<V>  - Set condition on BP #N\n");
+            gdb_send_output("  monitor cond <N> r<R>!=<V>  - Set condition on BP #N\n");
+            gdb_send_output("  monitor cond <N> r<R><<V>   - Set condition on BP #N\n");
+            gdb_send_output("  monitor cond <N> r<R>><V>   - Set condition on BP #N\n");
+            gdb_send_output("  monitor cond <N> mem[<A>]==<V> - Memory condition\n");
+            gdb_send_output("  monitor uncond <N>      - Remove condition from BP #N\n");
+            gdb_send_packet("OK");
+        } else if (strncmp(cmd, "info break", 10) == 0) {
+            char line[128];
+            int found = 0;
+            for (int i = 0; i < GDB_MAX_BREAKPOINTS; i++) {
+                if (gdb.bp_active[i]) {
+                    snprintf(line, sizeof(line), "  #%d: 0x%08X", i, gdb.breakpoints[i]);
+                    if (gdb.bp_cond[i].type != GDB_COND_NONE) {
+                        char cond_desc[64];
+                        snprintf(cond_desc, sizeof(cond_desc), " [cond: r%d op 0x%X]",
+                                 gdb.bp_cond[i].reg_num, gdb.bp_cond[i].value);
+                        strcat(line, cond_desc);
+                    }
+                    strcat(line, "\n");
+                    gdb_send_output(line);
+                    found = 1;
+                }
+            }
+            if (!found) gdb_send_output("No breakpoints set\n");
+            gdb_send_packet("OK");
+        } else if (strncmp(cmd, "info watch", 10) == 0) {
+            char line[128];
+            int found = 0;
+            for (int i = 0; i < GDB_MAX_WATCHPOINTS; i++) {
+                if (gdb.watchpoints[i].active) {
+                    const char *type_str = "access";
+                    if (gdb.watchpoints[i].type == GDB_WP_WRITE) type_str = "write";
+                    else if (gdb.watchpoints[i].type == GDB_WP_READ) type_str = "read";
+                    snprintf(line, sizeof(line), "  #%d: %s 0x%08X len=%u\n",
+                             i, type_str, gdb.watchpoints[i].addr,
+                             gdb.watchpoints[i].length);
+                    gdb_send_output(line);
+                    found = 1;
+                }
+            }
+            if (!found) gdb_send_output("No watchpoints set\n");
+            gdb_send_packet("OK");
+        } else if (strncmp(cmd, "cond ", 5) == 0) {
+            /* monitor cond <N> r<R>==<V> */
+            int bp_num = atoi(cmd + 5);
+            if (bp_num < 0 || bp_num >= GDB_MAX_BREAKPOINTS || !gdb.bp_active[bp_num]) {
+                gdb_send_output("Invalid breakpoint number\n");
+                gdb_send_packet("OK");
+            } else {
+                /* Find the condition expression after the space */
+                const char *expr = cmd + 5;
+                while (*expr && *expr != ' ') expr++;
+                while (*expr == ' ') expr++;
+
+                gdb_condition_t *c = &gdb.bp_cond[bp_num];
+                if (expr[0] == 'r' || expr[0] == 'R') {
+                    /* Register condition: r0==5, r3!=0, r1<100, r2>0xff */
+                    c->reg_num = (uint8_t)atoi(expr + 1);
+                    const char *op = expr + 1;
+                    while (*op >= '0' && *op <= '9') op++;
+                    if (strncmp(op, "==", 2) == 0) {
+                        c->type = GDB_COND_REG_EQ;
+                        c->value = (uint32_t)strtoul(op + 2, NULL, 0);
+                    } else if (strncmp(op, "!=", 2) == 0) {
+                        c->type = GDB_COND_REG_NE;
+                        c->value = (uint32_t)strtoul(op + 2, NULL, 0);
+                    } else if (op[0] == '<') {
+                        c->type = GDB_COND_REG_LT;
+                        c->value = (uint32_t)strtoul(op + 1, NULL, 0);
+                    } else if (op[0] == '>') {
+                        c->type = GDB_COND_REG_GT;
+                        c->value = (uint32_t)strtoul(op + 1, NULL, 0);
+                    } else {
+                        gdb_send_output("Unknown operator (use ==, !=, <, >)\n");
+                        gdb_send_packet("OK");
+                        return;
+                    }
+                    gdb_send_output("Condition set\n");
+                } else if (strncmp(expr, "mem[", 4) == 0) {
+                    /* Memory condition: mem[0x20000000]==0x1234 */
+                    c->addr = (uint32_t)strtoul(expr + 4, NULL, 0);
+                    const char *op = strchr(expr, ']');
+                    if (op) op++;
+                    if (op && strncmp(op, "==", 2) == 0) {
+                        c->type = GDB_COND_MEM_EQ;
+                        c->value = (uint32_t)strtoul(op + 2, NULL, 0);
+                    } else if (op && strncmp(op, "!=", 2) == 0) {
+                        c->type = GDB_COND_MEM_NE;
+                        c->value = (uint32_t)strtoul(op + 2, NULL, 0);
+                    } else {
+                        gdb_send_output("Use mem[addr]==val or mem[addr]!=val\n");
+                        gdb_send_packet("OK");
+                        return;
+                    }
+                    gdb_send_output("Condition set\n");
+                } else {
+                    gdb_send_output("Use: cond <N> r<R>==<V> or mem[<A>]==<V>\n");
+                }
+                gdb_send_packet("OK");
+            }
+        } else if (strncmp(cmd, "uncond ", 7) == 0) {
+            int bp_num = atoi(cmd + 7);
+            if (bp_num >= 0 && bp_num < GDB_MAX_BREAKPOINTS) {
+                gdb.bp_cond[bp_num].type = GDB_COND_NONE;
+                gdb_send_output("Condition removed\n");
+            }
+            gdb_send_packet("OK");
+        } else {
+            gdb_send_output("Unknown command. Type 'monitor help'\n");
+            gdb_send_packet("OK");
+        }
     } else {
-        gdb_send_packet("");     /* Unsupported query */
+        gdb_send_packet("");
     }
 }
 
@@ -229,10 +427,7 @@ static void handle_write_registers(const char *data) {
 }
 
 static void handle_read_register(const char *data) {
-    int reg_num = 0;
-    hex_to_u32(data, &reg_num);
-    reg_num = (int)hex_to_u32(data, NULL);
-
+    int reg_num = (int)hex_to_u32(data, NULL);
     char resp[9];
     if (reg_num < GDB_NUM_REGS) {
         u32_to_hex_le(gdb_read_reg(reg_num), resp);
@@ -256,9 +451,9 @@ static void handle_write_register(const char *data) {
 static void handle_read_memory(const char *data) {
     int len1, len2;
     uint32_t addr = hex_to_u32(data, &len1);
-    uint32_t length = hex_to_u32(data + len1 + 1, &len2);  /* Skip comma */
+    uint32_t length = hex_to_u32(data + len1 + 1, &len2);
 
-    if (length > 2048) length = 2048;  /* Limit response size */
+    if (length > 2048) length = 2048;
 
     char resp[4097];
     for (uint32_t i = 0; i < length; i++) {
@@ -272,8 +467,8 @@ static void handle_read_memory(const char *data) {
 static void handle_write_memory(const char *data) {
     int len1, len2;
     uint32_t addr = hex_to_u32(data, &len1);
-    uint32_t length = hex_to_u32(data + len1 + 1, &len2);  /* Skip comma */
-    const char *hex_data = data + len1 + 1 + len2 + 1;     /* Skip colon */
+    uint32_t length = hex_to_u32(data + len1 + 1, &len2);
+    const char *hex_data = data + len1 + 1 + len2 + 1;
 
     for (uint32_t i = 0; i < length; i++) {
         uint8_t byte = hex_byte(hex_data + i * 2);
@@ -285,19 +480,19 @@ static void handle_write_memory(const char *data) {
 static void handle_set_breakpoint(const char *data) {
     /* Z0,addr,kind or Z1,addr,kind */
     int len;
-    uint32_t addr = hex_to_u32(data + 2, &len);  /* Skip "0," or "1," */
+    uint32_t addr = hex_to_u32(data + 2, &len);
 
-    /* Find free slot */
     for (int i = 0; i < GDB_MAX_BREAKPOINTS; i++) {
         if (!gdb.bp_active[i]) {
             gdb.breakpoints[i] = addr;
             gdb.bp_active[i] = 1;
+            gdb.bp_cond[i].type = GDB_COND_NONE;
             gdb.bp_count++;
             gdb_send_packet("OK");
             return;
         }
     }
-    gdb_send_packet("E01");  /* No room */
+    gdb_send_packet("E01");
 }
 
 static void handle_remove_breakpoint(const char *data) {
@@ -307,12 +502,65 @@ static void handle_remove_breakpoint(const char *data) {
     for (int i = 0; i < GDB_MAX_BREAKPOINTS; i++) {
         if (gdb.bp_active[i] && gdb.breakpoints[i] == addr) {
             gdb.bp_active[i] = 0;
+            gdb.bp_cond[i].type = GDB_COND_NONE;
             gdb.bp_count--;
             gdb_send_packet("OK");
             return;
         }
     }
-    gdb_send_packet("OK");  /* Not found is OK */
+    gdb_send_packet("OK");
+}
+
+static void handle_set_watchpoint(const char *data) {
+    /* Z2,addr,kind or Z3,addr,kind or Z4,addr,kind */
+    int type = data[0] - '0'; /* 2, 3, or 4 */
+    int len;
+    uint32_t addr = hex_to_u32(data + 2, &len);
+    uint32_t length = 4; /* Default watch 4 bytes */
+    if (data[2 + len] == ',') {
+        length = hex_to_u32(data + 2 + len + 1, NULL);
+        if (length == 0) length = 4;
+    }
+
+    for (int i = 0; i < GDB_MAX_WATCHPOINTS; i++) {
+        if (!gdb.watchpoints[i].active) {
+            gdb.watchpoints[i].addr = addr;
+            gdb.watchpoints[i].length = length;
+            gdb.watchpoints[i].type = type;
+            gdb.watchpoints[i].active = 1;
+            gdb.wp_count++;
+            gdb_send_packet("OK");
+            return;
+        }
+    }
+    gdb_send_packet("E01");
+}
+
+static void handle_remove_watchpoint(const char *data) {
+    int type = data[0] - '0';
+    int len;
+    uint32_t addr = hex_to_u32(data + 2, &len);
+
+    for (int i = 0; i < GDB_MAX_WATCHPOINTS; i++) {
+        if (gdb.watchpoints[i].active &&
+            gdb.watchpoints[i].addr == addr &&
+            gdb.watchpoints[i].type == type) {
+            gdb.watchpoints[i].active = 0;
+            gdb.wp_count--;
+            gdb_send_packet("OK");
+            return;
+        }
+    }
+    gdb_send_packet("OK");
+}
+
+/* Parse thread ID from H command: Hg<id> or Hc<id>
+ * Thread IDs: -1 or 0 = all, 1 = core 0, 2 = core 1 */
+static int parse_thread_id(const char *s) {
+    if (s[0] == '-' && s[1] == '1') return -1;
+    int tid = (int)strtol(s, NULL, 16);
+    if (tid <= 0) return -1;  /* 0 or negative = all */
+    return tid - 1;  /* Convert 1-based thread to 0-based core */
 }
 
 /* ========================================================================
@@ -324,8 +572,10 @@ int gdb_init(int port) {
     gdb.port = port;
     gdb.server_fd = -1;
     gdb.client_fd = -1;
+    gdb.g_thread = 0;  /* Default: core 0 */
+    gdb.c_thread = -1;  /* Default: all cores */
+    gdb.stop_core = 0;
 
-    /* Create TCP server socket */
     gdb.server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (gdb.server_fd < 0) {
         perror("[GDB] socket");
@@ -357,7 +607,6 @@ int gdb_init(int port) {
            port, port);
     fflush(stdout);
 
-    /* Wait for client connection */
     struct sockaddr_in client_addr;
     socklen_t client_len = sizeof(client_addr);
     gdb.client_fd = accept(gdb.server_fd, (struct sockaddr *)&client_addr, &client_len);
@@ -380,11 +629,64 @@ void gdb_cleanup(void) {
     gdb.active = 0;
 }
 
-int gdb_should_stop(uint32_t pc) {
+int gdb_should_stop(uint32_t pc, int core_id) {
+    /* Watchpoint hit (set by membus hooks) */
+    if (gdb.wp_hit) return 1;
+
     if (gdb.single_step) return 1;
 
     for (int i = 0; i < GDB_MAX_BREAKPOINTS; i++) {
         if (gdb.bp_active[i] && gdb.breakpoints[i] == pc) {
+            if (gdb_eval_condition(&gdb.bp_cond[i], core_id)) {
+                gdb.stop_core = core_id;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* Check watchpoints on memory write */
+int gdb_check_watchpoint_write(uint32_t addr, uint32_t size) {
+    if (!gdb.active || gdb.wp_count == 0) return 0;
+
+    for (int i = 0; i < GDB_MAX_WATCHPOINTS; i++) {
+        if (!gdb.watchpoints[i].active) continue;
+        if (gdb.watchpoints[i].type != GDB_WP_WRITE &&
+            gdb.watchpoints[i].type != GDB_WP_ACCESS) continue;
+
+        uint32_t wp_start = gdb.watchpoints[i].addr;
+        uint32_t wp_end = wp_start + gdb.watchpoints[i].length;
+        uint32_t acc_end = addr + size;
+
+        /* Check overlap */
+        if (addr < wp_end && acc_end > wp_start) {
+            gdb.wp_hit = 1;
+            gdb.wp_hit_addr = addr;
+            gdb.wp_hit_type = gdb.watchpoints[i].type;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Check watchpoints on memory read */
+int gdb_check_watchpoint_read(uint32_t addr, uint32_t size) {
+    if (!gdb.active || gdb.wp_count == 0) return 0;
+
+    for (int i = 0; i < GDB_MAX_WATCHPOINTS; i++) {
+        if (!gdb.watchpoints[i].active) continue;
+        if (gdb.watchpoints[i].type != GDB_WP_READ &&
+            gdb.watchpoints[i].type != GDB_WP_ACCESS) continue;
+
+        uint32_t wp_start = gdb.watchpoints[i].addr;
+        uint32_t wp_end = wp_start + gdb.watchpoints[i].length;
+        uint32_t acc_end = addr + size;
+
+        if (addr < wp_end && acc_end > wp_start) {
+            gdb.wp_hit = 1;
+            gdb.wp_hit_addr = addr;
+            gdb.wp_hit_type = gdb.watchpoints[i].type;
             return 1;
         }
     }
@@ -394,8 +696,23 @@ int gdb_should_stop(uint32_t pc) {
 int gdb_handle(void) {
     if (!gdb.active) return -1;
 
-    /* Send stop reason */
-    gdb_send_packet("S05");  /* SIGTRAP */
+    /* Send stop reason with thread info */
+    if (gdb.wp_hit) {
+        /* Watchpoint stop: T05watch:addr; or T05rwatch:addr; or T05awatch:addr; */
+        char resp[64];
+        const char *wp_type = "awatch";
+        if (gdb.wp_hit_type == GDB_WP_WRITE) wp_type = "watch";
+        else if (gdb.wp_hit_type == GDB_WP_READ) wp_type = "rwatch";
+        snprintf(resp, sizeof(resp), "T05%s:%x;thread:%d;",
+                 wp_type, gdb.wp_hit_addr, gdb.stop_core + 1);
+        gdb_send_packet(resp);
+        gdb.wp_hit = 0;
+    } else {
+        /* Normal stop (breakpoint/step): T05thread:N; */
+        char resp[32];
+        snprintf(resp, sizeof(resp), "T05thread:%d;", gdb.stop_core + 1);
+        gdb_send_packet(resp);
+    }
     gdb.single_step = 0;
 
     while (1) {
@@ -409,15 +726,20 @@ int gdb_handle(void) {
 
         if (len == 0) continue;
 
-        /* Handle Ctrl-C interrupt */
         if (pkt[0] == 0x03) {
-            gdb_send_packet("S02");  /* SIGINT */
+            char resp[32];
+            snprintf(resp, sizeof(resp), "T02thread:%d;", gdb.stop_core + 1);
+            gdb_send_packet(resp);
             continue;
         }
 
         switch (pkt[0]) {
         case '?':
-            gdb_send_packet("S05");  /* SIGTRAP */
+            {
+                char resp[32];
+                snprintf(resp, sizeof(resp), "T05thread:%d;", gdb.stop_core + 1);
+                gdb_send_packet(resp);
+            }
             break;
 
         case 'g':
@@ -445,26 +767,28 @@ int gdb_handle(void) {
             break;
 
         case 'c':
-            /* Continue execution */
             gdb.single_step = 0;
             return 0;
 
         case 's':
-            /* Single step */
             gdb.single_step = 1;
             return 1;
 
         case 'Z':
             if (pkt[1] == '0' || pkt[1] == '1') {
                 handle_set_breakpoint(pkt + 1);
+            } else if (pkt[1] == '2' || pkt[1] == '3' || pkt[1] == '4') {
+                handle_set_watchpoint(pkt + 1);
             } else {
-                gdb_send_packet("");  /* Unsupported type */
+                gdb_send_packet("");
             }
             break;
 
         case 'z':
             if (pkt[1] == '0' || pkt[1] == '1') {
                 handle_remove_breakpoint(pkt + 1);
+            } else if (pkt[1] == '2' || pkt[1] == '3' || pkt[1] == '4') {
+                handle_remove_watchpoint(pkt + 1);
             } else {
                 gdb_send_packet("");
             }
@@ -482,15 +806,32 @@ int gdb_handle(void) {
             return -1;
 
         case 'H':
-            /* Set thread - just acknowledge */
+            /* Hg<thread> or Hc<thread> */
+            if (pkt[1] == 'g') {
+                gdb.g_thread = parse_thread_id(pkt + 2);
+                if (gdb.g_thread < 0) gdb.g_thread = 0;
+            } else if (pkt[1] == 'c') {
+                gdb.c_thread = parse_thread_id(pkt + 2);
+            }
             gdb_send_packet("OK");
+            break;
+
+        case 'T':
+            /* Thread alive query: T<thread-id> */
+            {
+                int tid = (int)hex_to_u32(pkt + 1, NULL);
+                if (tid >= 1 && tid <= num_active_cores)
+                    gdb_send_packet("OK");
+                else
+                    gdb_send_packet("E01");
+            }
             break;
 
         case 'v':
             if (strncmp(pkt, "vMustReplyEmpty", 15) == 0) {
                 gdb_send_packet("");
             } else if (strncmp(pkt, "vCont?", 6) == 0) {
-                gdb_send_packet("vCont;c;s");
+                gdb_send_packet("vCont;c;s;C;S");
             } else if (strncmp(pkt, "vCont;c", 7) == 0) {
                 gdb.single_step = 0;
                 return 0;
@@ -507,7 +848,7 @@ int gdb_handle(void) {
             break;
 
         default:
-            gdb_send_packet("");  /* Unsupported command */
+            gdb_send_packet("");
             break;
         }
     }

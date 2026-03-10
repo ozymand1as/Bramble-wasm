@@ -49,6 +49,7 @@ set(SOURCES
     src/w5500.c
     src/bme280.c
     src/corepool.c
+    src/cyw43.c
 )
 
 # Executable
@@ -98,6 +99,8 @@ set(LIB_SOURCES
     src/w5500.c
     src/bme280.c
     src/corepool.c
+    src/gdb.c
+    src/cyw43.c
 )
 
 # Test executable
