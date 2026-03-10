@@ -38,6 +38,9 @@
 #include "rtc.h"
 #include "netbridge.h"
 #include "wire.h"
+#include "storage.h"
+#include "sdcard.h"
+#include "emmc.h"
 
 
 int any_core_running(void);
@@ -107,6 +110,13 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -no-boot2  Skip boot2 even if detected in firmware\n");
         fprintf(stderr, "  -debug-mem Log unmapped peripheral accesses\n");
         fprintf(stderr, "  -flash <path> Persistent flash storage (2MB file)\n");
+        fprintf(stderr, "\nStorage:\n");
+        fprintf(stderr, "  -sdcard <path>              Attach SD card image to SPI1\n");
+        fprintf(stderr, "  -sdcard-spi <0|1>           SPI bus for SD card (default: 1)\n");
+        fprintf(stderr, "  -sdcard-size <MB>           SD card size in MB (default: 64)\n");
+        fprintf(stderr, "  -emmc <path>                Attach eMMC image to SPI0\n");
+        fprintf(stderr, "  -emmc-spi <0|1>             SPI bus for eMMC (default: 0)\n");
+        fprintf(stderr, "  -emmc-size <MB>             eMMC size in MB (default: 128)\n");
         fprintf(stderr, "\nNetworking:\n");
         fprintf(stderr, "  -net-uart0 <port>           Bridge UART0 to TCP server on port\n");
         fprintf(stderr, "  -net-uart1 <port>           Bridge UART1 to TCP server on port\n");
@@ -128,6 +138,14 @@ int main(int argc, char **argv) {
     int gdb_port = GDB_DEFAULT_PORT;
     int no_boot2 = 0;
     char *flash_path = NULL;
+    char *sdcard_path = NULL;
+    int sdcard_spi = 1;
+    size_t sdcard_size = SD_DEFAULT_SIZE;
+    char *emmc_path = NULL;
+    int emmc_spi = 0;
+    size_t emmc_size = EMMC_DEFAULT_SIZE;
+    static sdcard_t sdcard;
+    static emmc_t emmc_dev;
 
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "-debug") == 0) {
@@ -157,6 +175,30 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "-flash") == 0) {
             if (i + 1 < argc) {
                 flash_path = argv[++i];
+            }
+        } else if (strcmp(argv[i], "-sdcard") == 0) {
+            if (i + 1 < argc) {
+                sdcard_path = argv[++i];
+            }
+        } else if (strcmp(argv[i], "-sdcard-spi") == 0) {
+            if (i + 1 < argc) {
+                sdcard_spi = atoi(argv[++i]);
+            }
+        } else if (strcmp(argv[i], "-sdcard-size") == 0) {
+            if (i + 1 < argc) {
+                sdcard_size = (size_t)atoi(argv[++i]) * 1024 * 1024;
+            }
+        } else if (strcmp(argv[i], "-emmc") == 0) {
+            if (i + 1 < argc) {
+                emmc_path = argv[++i];
+            }
+        } else if (strcmp(argv[i], "-emmc-spi") == 0) {
+            if (i + 1 < argc) {
+                emmc_spi = atoi(argv[++i]);
+            }
+        } else if (strcmp(argv[i], "-emmc-size") == 0) {
+            if (i + 1 < argc) {
+                emmc_size = (size_t)atoi(argv[++i]) * 1024 * 1024;
             }
         } else if (strcmp(argv[i], "-net-uart0") == 0) {
             if (i + 1 < argc) {
@@ -280,6 +322,9 @@ int main(int argc, char **argv) {
             fclose(ff);
             fprintf(stderr,"[Init] Flash file loaded: %s (non-firmware sectors restored)\n", flash_path);
         }
+        /* Enable write-through persistence */
+        flash_persist_set_path(flash_path);
+        flash_persist_open();
     }
 
     /* Detect boot2 in firmware */
@@ -325,6 +370,28 @@ int main(int argc, char **argv) {
     if (wire_init() < 0) {
         fprintf(stderr, "[Error] Failed to initialize wire protocol\n");
         return EXIT_FAILURE;
+    }
+
+    /* SD card initialization */
+    if (sdcard_path) {
+        if (sdcard_init(&sdcard, sdcard_path, sdcard_size) < 0) {
+            fprintf(stderr, "[Error] Failed to initialize SD card\n");
+            return EXIT_FAILURE;
+        }
+        spi_attach_device(sdcard_spi, sdcard_spi_xfer, sdcard_spi_cs, &sdcard);
+        fprintf(stderr, "[Init] SD card (%zu MB) on SPI%d: %s\n",
+                sdcard_size / (1024 * 1024), sdcard_spi, sdcard_path);
+    }
+
+    /* eMMC initialization */
+    if (emmc_path) {
+        if (emmc_init(&emmc_dev, emmc_path, emmc_size) < 0) {
+            fprintf(stderr, "[Error] Failed to initialize eMMC\n");
+            return EXIT_FAILURE;
+        }
+        spi_attach_device(emmc_spi, emmc_spi_xfer, emmc_spi_cs, &emmc_dev);
+        fprintf(stderr, "[Init] eMMC (%zu MB) on SPI%d: %s\n",
+                emmc_size / (1024 * 1024), emmc_spi, emmc_path);
     }
 
     fprintf(stderr,"[Boot] Starting Core 0 from flash...\n");
@@ -386,6 +453,12 @@ int main(int argc, char **argv) {
             wire_poll();
         }
 
+        /* Flush dirty storage devices every ~1M steps */
+        if ((step_count & 0xFFFFF) == 0) {
+            if (sdcard_path) sdcard_flush(&sdcard);
+            if (emmc_path) emmc_flush(&emmc_dev);
+        }
+
         if (show_status && (step_count % 1000 == 0)) {
             fprintf(stderr,"[Status] Step %u (Inst %u)\n", step_count, instruction_count);
             fprintf(stderr," Core 0: PC=0x%08X SP=0x%08X %s\n",
@@ -438,16 +511,18 @@ int main(int argc, char **argv) {
     net_bridge_cleanup();
     wire_cleanup();
 
-    /* Save flash to file if persistence enabled */
+    /* Flush and cleanup storage devices */
+    if (sdcard_path) {
+        sdcard_cleanup(&sdcard);
+    }
+    if (emmc_path) {
+        emmc_cleanup(&emmc_dev);
+    }
+
+    /* Save flash and close persistence */
     if (flash_path) {
-        FILE *ff = fopen(flash_path, "wb");
-        if (ff) {
-            fwrite(cpu.flash, 1, FLASH_SIZE, ff);
-            fclose(ff);
-            fprintf(stderr,"[Flash] Saved to %s\n", flash_path);
-        } else {
-            fprintf(stderr, "[Flash] Failed to save: %s\n", flash_path);
-        }
+        flash_persist_save_all();
+        flash_persist_close();
     }
 
     fprintf(stderr,"\n");

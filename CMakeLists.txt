@@ -38,6 +38,9 @@ set(SOURCES
     src/rtc.c
     src/netbridge.c
     src/wire.c
+    src/storage.c
+    src/sdcard.c
+    src/emmc.c
 )
 
 # Executable
@@ -70,6 +73,9 @@ set(LIB_SOURCES
     src/rtc.c
     src/netbridge.c
     src/wire.c
+    src/storage.c
+    src/sdcard.c
+    src/emmc.c
 )
 
 # Test executable
