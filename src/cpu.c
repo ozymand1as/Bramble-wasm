@@ -791,6 +791,19 @@ void cpu_exception_entry(uint32_t vector_num) {
                vector_num, cpu.r[15], cpu.vtor, handler_addr, *p_exception_depth);
     }
 
+    /* ARMv6-M lockup: fault during HardFault (or equal/higher priority) = lockup.
+     * HardFault has fixed priority -1. If we're already in HardFault and another
+     * fault occurs, the real Cortex-M0+ enters lockup (core halts). */
+    if (vector_num == EXC_HARDFAULT && cpu.current_irq == EXC_HARDFAULT) {
+        if (cpu.debug_enabled) {
+            printf("[CPU] LOCKUP: double-fault (HardFault during HardFault) at PC=0x%08X\n",
+                   cpu.r[15]);
+        }
+        cores[ac].is_halted = 1;
+        cpu.r[15] = 0xFFFFFFFF;
+        return;
+    }
+
     if (vector_num < 32) {
         nvic_states[ac].active_exceptions |= (1u << vector_num);
     }
