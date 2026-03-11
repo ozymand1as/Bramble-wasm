@@ -71,6 +71,55 @@ static uint32_t sysinfo_read(uint32_t offset) {
 }
 
 /* ========================================================================
+ * BUSCTRL Registers (0x40030000)
+ *
+ * Bus fabric priority and performance counters.
+ * Used by pico_rand for entropy seeding.
+ * ======================================================================== */
+
+#define BUSCTRL_BASE 0x40030000
+
+static uint32_t busctrl_bus_priority = 0;
+static uint32_t busctrl_perfsel[4] = {0x1F, 0x1F, 0x1F, 0x1F};  /* Reset value */
+static uint32_t busctrl_perfctr[4] = {0, 0, 0, 0};
+
+static int busctrl_match(uint32_t addr) {
+    uint32_t base = addr & ~0x3000;
+    return base >= BUSCTRL_BASE && base < BUSCTRL_BASE + 0x1000;
+}
+
+static uint32_t busctrl_read(uint32_t offset) {
+    switch (offset) {
+    case 0x00: return busctrl_bus_priority;
+    case 0x04: return 0;  /* BUS_PRIORITY_ACK */
+    case 0x08: return busctrl_perfctr[0];
+    case 0x0C: return busctrl_perfsel[0];
+    case 0x10: return busctrl_perfctr[1];
+    case 0x14: return busctrl_perfsel[1];
+    case 0x18: return busctrl_perfctr[2];
+    case 0x1C: return busctrl_perfsel[2];
+    case 0x20: return busctrl_perfctr[3];
+    case 0x24: return busctrl_perfsel[3];
+    default:   return 0;
+    }
+}
+
+static void busctrl_write(uint32_t offset, uint32_t val) {
+    switch (offset) {
+    case 0x00: busctrl_bus_priority = val & 0x1111; break;
+    case 0x08: busctrl_perfctr[0] = 0; break;  /* W1C: any write clears */
+    case 0x0C: busctrl_perfsel[0] = val & 0x1F; break;
+    case 0x10: busctrl_perfctr[1] = 0; break;
+    case 0x14: busctrl_perfsel[1] = val & 0x1F; break;
+    case 0x18: busctrl_perfctr[2] = 0; break;
+    case 0x1C: busctrl_perfsel[2] = val & 0x1F; break;
+    case 0x20: busctrl_perfctr[3] = 0; break;
+    case 0x24: busctrl_perfsel[3] = val & 0x1F; break;
+    default: break;
+    }
+}
+
+/* ========================================================================
  * IO_QSPI Registers (0x40018000)
  *
  * Minimal stub for QSPI pad GPIO control (6 pins: SCLK, SS, SD0-SD3).
@@ -1198,6 +1247,22 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
+    /* BUSCTRL */
+    if (busctrl_match(addr)) {
+        uint32_t alias = addr & 0x3000;
+        uint32_t offset = addr & 0xFFF;
+        if (alias == 0x0000) {
+            busctrl_write(offset, val);
+        } else if (alias == 0x2000) {
+            busctrl_write(offset, busctrl_read(offset) | val);
+        } else if (alias == 0x3000) {
+            busctrl_write(offset, busctrl_read(offset) & ~val);
+        } else {
+            busctrl_write(offset, busctrl_read(offset) ^ val);
+        }
+        return;
+    }
+
     /* VREG_AND_CHIP_RESET stub (0x40064000) */
     if ((addr & ~0x3000) >= 0x40064000 && (addr & ~0x3000) < 0x40064000 + 0x10) {
         return;  /* Silently accept writes */
@@ -1503,6 +1568,11 @@ uint32_t mem_read32(uint32_t addr) {
     /* PADS_QSPI */
     if (pads_qspi_match(addr)) {
         return pads_qspi_read(addr & 0xFFF);
+    }
+
+    /* BUSCTRL */
+    if (busctrl_match(addr)) {
+        return busctrl_read(addr & 0xFFF);
     }
 
     /* VREG_AND_CHIP_RESET stub (0x40064000) */

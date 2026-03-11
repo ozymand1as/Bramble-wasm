@@ -606,7 +606,7 @@ uint32_t pio_read32(int pio_num, uint32_t offset) {
         uint32_t fstat = 0;
         for (int sm = 0; sm < PIO_NUM_SM; sm++) {
             /* CYW43 intercept: PIO0 SM0 reports virtual FIFO status */
-            if (cyw43.enabled && pio_num == 0 && sm == 0) {
+            if (cyw43.enabled && pio_num == cyw43.pio_num && sm == cyw43.pio_sm) {
                 /* TX always accepts (never full, always "empty" for writes) */
                 fstat |= (1u << (PIO_FSTAT_TXEMPTY_SHIFT + sm));
                 /* RX has data when in read phase */
@@ -649,7 +649,7 @@ uint32_t pio_read32(int pio_num, uint32_t offset) {
     case PIO_RXF0: case PIO_RXF1: case PIO_RXF2: case PIO_RXF3: {
         int sm = (offset - PIO_RXF0) / 4;
         /* CYW43 WiFi intercept: PIO0 SM0 RX returns gSPI response */
-        if (cyw43.enabled && pio_num == 0 && sm == 0) {
+        if (cyw43.enabled && pio_num == cyw43.pio_num && sm == cyw43.pio_sm) {
             return cyw43_pio_rx_read();
         }
         uint32_t val = 0;
@@ -774,7 +774,7 @@ void pio_write32(int pio_num, uint32_t offset, uint32_t val) {
     case PIO_TXF0: case PIO_TXF1: case PIO_TXF2: case PIO_TXF3: {
         int sm = (offset - PIO_TXF0) / 4;
         /* CYW43 WiFi intercept: PIO0 SM0 TX triggers gSPI processing */
-        if (cyw43.enabled && pio_num == 0 && sm == 0) {
+        if (cyw43.enabled && pio_num == cyw43.pio_num && sm == cyw43.pio_sm) {
             cyw43_pio_tx_write(val);
             break;
         }
@@ -835,7 +835,21 @@ void pio_write32(int pio_num, uint32_t offset, uint32_t val) {
             s->instr = val & 0xFFFF;
             s->exec_pending = 1;
             break;
-        case 0x14: s->pinctrl = val; break;
+        case 0x14:
+            s->pinctrl = val;
+            /* Auto-detect CYW43 PIO/SM: sideset_base == pin 24 (WL_CLK) */
+            if (cyw43.enabled) {
+                uint8_t ss_base = (val >> 10) & 0x1F;
+                fprintf(stderr, "[PIO] PIO%d SM%d PINCTRL=0x%08X sideset_base=%d\n",
+                        pio_num, sm, val, ss_base);
+                if (ss_base == 24) {
+                    cyw43.pio_num = pio_num;
+                    cyw43.pio_sm = sm;
+                    fprintf(stderr, "[CYW43] Auto-detected PIO%d SM%d for gSPI\n",
+                            pio_num, sm);
+                }
+            }
+            break;
         default: break;
         }
     }

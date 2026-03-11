@@ -68,6 +68,10 @@ static void dma_do_transfer(int ch_idx) {
     uint32_t dst = c->write_addr;
     uint32_t step;
 
+    if (cpu.debug_enabled)
+        fprintf(stderr, "[DMA] ch%d: src=0x%08X dst=0x%08X count=%d size=%d incr_r=%d incr_w=%d\n",
+                ch_idx, src, dst, count, data_size, incr_read, incr_write);
+
     switch (data_size) {
     case DMA_SIZE_BYTE:     step = 1; break;
     case DMA_SIZE_HALFWORD: step = 2; break;

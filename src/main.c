@@ -133,6 +133,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -wire-gpio <path>           Wire GPIO pins to peer via Unix socket\n");
         fprintf(stderr, "\nWiFi (Pico W):\n");
         fprintf(stderr, "  -wifi                       Enable CYW43 WiFi chip emulation\n");
+        fprintf(stderr, "  -tap <ifname>               Bridge WiFi to TAP interface (implies -wifi)\n");
         fprintf(stderr, "\nPerformance:\n");
         fprintf(stderr, "  -jit        Enable JIT basic block compilation for hot loops\n");
         return EXIT_FAILURE;
@@ -154,6 +155,7 @@ int main(int argc, char **argv) {
     char *emmc_path = NULL;
     int emmc_spi = 0;
     size_t emmc_size = EMMC_DEFAULT_SIZE;
+    char *tap_name = NULL;
     int jit_mode = 0;
     int threaded_mode = 0;   /* Use pthread-per-core execution */
     int cores_auto = 0;     /* -cores auto requested */
@@ -282,6 +284,11 @@ int main(int argc, char **argv) {
             }
         } else if (strcmp(argv[i], "-wifi") == 0) {
             cyw43.enabled = 1;
+        } else if (strcmp(argv[i], "-tap") == 0) {
+            if (i + 1 < argc) {
+                tap_name = argv[++i];
+                cyw43.enabled = 1;  /* -tap implies -wifi */
+            }
         } else if (strcmp(argv[i], "-jit") == 0) {
             jit_mode = 1;
         }
@@ -331,6 +338,11 @@ int main(int argc, char **argv) {
     if (cyw43.enabled) {
         cyw43_init();
         fprintf(stderr, "[WiFi] CYW43439 emulation enabled\n");
+        if (tap_name) {
+            if (cyw43_tap_open(tap_name) < 0) {
+                fprintf(stderr, "[WiFi] Failed to open TAP interface '%s'\n", tap_name);
+            }
+        }
     }
 
     int loaded = 0;
@@ -523,10 +535,11 @@ int main(int argc, char **argv) {
                 corepool_unlock();
             }
 
-            /* Poll network and wire */
+            /* Poll network, wire, and WiFi TAP */
             corepool_lock();
             net_bridge_poll();
             wire_poll();
+            cyw43_tap_poll();
             corepool_unlock();
 
             /* Periodic storage flush */
@@ -612,10 +625,11 @@ int main(int argc, char **argv) {
                 uart_stdin_poll();
             }
 
-            /* Poll network bridges and wire links every 1024 steps */
+            /* Poll network bridges, wire links, and WiFi TAP every 1024 steps */
             if ((step_count & 0x3FF) == 0) {
                 net_bridge_poll();
                 wire_poll();
+                cyw43_tap_poll();
             }
 
             /* Flush dirty storage devices every ~1M steps */
@@ -680,6 +694,7 @@ int main(int argc, char **argv) {
 
     net_bridge_cleanup();
     wire_cleanup();
+    cyw43_tap_close();
 
     /* Unmount FUSE filesystem */
     if (mount_path) {

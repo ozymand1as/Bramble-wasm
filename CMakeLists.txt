@@ -50,6 +50,7 @@ set(SOURCES
     src/bme280.c
     src/corepool.c
     src/cyw43.c
+    src/tapif.c
 )
 
 # Executable
@@ -101,6 +102,7 @@ set(LIB_SOURCES
     src/corepool.c
     src/gdb.c
     src/cyw43.c
+    src/tapif.c
 )
 
 # Test executable
