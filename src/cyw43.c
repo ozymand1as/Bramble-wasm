@@ -50,7 +50,15 @@ static int rx_queue_count(void) {
  * reading the SPI interrupt register, so we must assert this whenever there
  * is a frame waiting in rx_queue. */
 static void cyw43_update_irq(void) {
-    gpio_set_input_pin(WL_HOST_WAKE, rx_queue_count() > 0 ? 1 : 0);
+    /* GPIO 24 is WL_DIO (SPI data, output during TX) shared with WL_HOST_WAKE
+     * (input when idle). The PIO program does "set pindirs, 0" after RX to
+     * switch it back to input, but since we intercept the FIFO without running
+     * instructions, we must do this ourselves so gpio_get(24) returns our IRQ
+     * state rather than the stale PIO output direction. */
+    gpio_set_direction(WL_HOST_WAKE, 0);  /* 0 = input */
+    int val = rx_queue_count() > 0 ? 1 : 0;
+    fprintf(stderr, "[CYW43] update_irq: GPIO24=%d (q=%d)\n", val, rx_queue_count());
+    gpio_set_input_pin(WL_HOST_WAKE, val);
 }
 
 static int rx_queue_push(const uint8_t *data, int len) {
@@ -121,87 +129,103 @@ static void cyw43_queue_ioctl_response(uint32_t cmd, uint16_t ioctl_id,
     rx_queue_push(frame, offset);
 }
 
-/* Build an async event and queue it */
+/* Build an async event and queue it.
+ *
+ * Frame layout (offsets relative to BDC payload start = "payload"):
+ *   payload[0..13]  : Ethernet header (14 bytes)
+ *   payload[14..23] : bcmilcp header: subtype(2)+length(2)+pad(1)+OUI(3)+usr_subtype(2)
+ *   payload[24..]   : event body = wl_event_msg_t / cyw43_async_event_t layout:
+ *                     _0/version(2), flags(2), event_type(4), status(4), reason(4),
+ *                     auth_type(4), datalen(4), addr(6), ifname(16), ifidx(1), bsscfgidx(1)
+ *
+ * SDK passes buf=payload+24 to cyw43_ll_parse_async_event, which does a memmove
+ * (alignment fix) copying buf -> buf-2 (payload+22), then casts to cyw43_async_event_t:
+ *   ev._0        = payload[22..23] = was at payload[24..25] = version (0x0002)
+ *   ev.flags     = payload[24..25] = was at payload[26..27] (BE uint16)
+ *   ev.event_type = payload[26..29] = was at payload[28..31] (BE uint32)
+ *   ev.status    = payload[30..33] = was at payload[32..35] (BE uint32)
+ */
 static void cyw43_queue_event(uint32_t event_type, uint32_t status,
-                               uint32_t reason, uint32_t auth_type) {
+                               uint32_t reason, uint16_t flags) {
     uint8_t frame[256];
     int offset = 0;
 
     /* Reserve space for SDPCM (12) + pad (2) + BDC (4) = 18 bytes */
     offset = 18;
 
-    /* Ethernet header (14 bytes) */
+    /* Ethernet header (14 bytes) — payload[0..13] */
     memset(frame + offset, 0xFF, 6);                    /* dst: broadcast */
     memcpy(frame + offset + 6, cyw43.mac_addr, 6);      /* src: device MAC */
     frame[offset + 12] = 0x88;                           /* ethertype: 0x886C */
     frame[offset + 13] = 0x6C;
     offset += 14;
 
-    /* Broadcom event header */
+    /* bcmilcp header — payload[14..23] */
     frame[offset++] = 0x00; frame[offset++] = 0x01;     /* subtype = 1 (BE) */
-    /* length placeholder - fill later */
     int len_offset = offset;
-    frame[offset++] = 0x00; frame[offset++] = 0x00;
-    frame[offset++] = 0x00; frame[offset++] = 0x10; frame[offset++] = 0x18; /* OUI */
-    frame[offset++] = 0x80; frame[offset++] = 0x02;     /* usr_subtype (BE) */
+    frame[offset++] = 0x00; frame[offset++] = 0x00;     /* length placeholder */
+    frame[offset++] = 0x00;                              /* pad byte — payload[18] */
+    frame[offset++] = 0x00; frame[offset++] = 0x10; frame[offset++] = 0x18; /* OUI — payload[19-21] */
+    frame[offset++] = 0x80; frame[offset++] = 0x02;     /* usr_subtype — payload[22-23] = ev._0 */
 
-    /* Event fields (all big-endian) */
-    frame[offset++] = 0x00; frame[offset++] = 0x02;     /* version = 2 */
-    frame[offset++] = 0x00; frame[offset++] = 0x00;     /* flags = 0 */
+    /* Event body — payload[24..] */
 
-    /* event_type (BE u32) */
+    /* ev._0 = version = 0x0002 (BE uint16; SDK ignores this field) */
+    frame[offset++] = 0x00;
+    frame[offset++] = 0x02;
+
+    /* ev.flags (BE uint16): bit 0 = link-up for EV_LINK — payload[26..27] */
+    frame[offset++] = (flags >> 8) & 0xFF;
+    frame[offset++] = flags & 0xFF;
+
+    /* ev.event_type (BE u32) — payload[28..31] */
     frame[offset++] = (event_type >> 24) & 0xFF;
     frame[offset++] = (event_type >> 16) & 0xFF;
     frame[offset++] = (event_type >>  8) & 0xFF;
     frame[offset++] = (event_type >>  0) & 0xFF;
 
-    /* status (BE u32) */
+    /* ev.status (BE u32) — payload[32..35] */
     frame[offset++] = (status >> 24) & 0xFF;
     frame[offset++] = (status >> 16) & 0xFF;
     frame[offset++] = (status >>  8) & 0xFF;
     frame[offset++] = (status >>  0) & 0xFF;
 
-    /* reason (BE u32) */
+    /* ev.reason (BE u32) — payload[36..39] */
     frame[offset++] = (reason >> 24) & 0xFF;
     frame[offset++] = (reason >> 16) & 0xFF;
     frame[offset++] = (reason >>  8) & 0xFF;
     frame[offset++] = (reason >>  0) & 0xFF;
 
-    /* auth_type (BE u32) */
-    frame[offset++] = (auth_type >> 24) & 0xFF;
-    frame[offset++] = (auth_type >> 16) & 0xFF;
-    frame[offset++] = (auth_type >>  8) & 0xFF;
-    frame[offset++] = (auth_type >>  0) & 0xFF;
-
-    /* datalen (BE u32) = 0 */
+    /* ev._1[0..3]: auth_type (BE u32) = 0 — payload[40..43] */
     frame[offset++] = 0; frame[offset++] = 0;
     frame[offset++] = 0; frame[offset++] = 0;
 
-    /* addr (6 bytes) = device MAC */
+    /* ev._1[4..7]: datalen (BE u32) = 0 */
+    frame[offset++] = 0; frame[offset++] = 0;
+    frame[offset++] = 0; frame[offset++] = 0;
+
+    /* ev._1[8..13]: addr (6 bytes) = device MAC */
     memcpy(frame + offset, cyw43.mac_addr, 6);
     offset += 6;
 
-    /* ifname (16 bytes) = "wl0" */
+    /* ev._1[14..29]: ifname (16 bytes) = "wl0" */
     memset(frame + offset, 0, 16);
     frame[offset] = 'w'; frame[offset+1] = 'l'; frame[offset+2] = '0';
     offset += 16;
 
-    /* ifidx, bsscfgidx */
+    /* ifidx + bsscfgidx (= ev.interface) */
     frame[offset++] = 0;  /* ifidx */
     frame[offset++] = 0;  /* bsscfgidx */
 
-    /* Fill length field (length of event data from version onward) */
-    uint16_t ev_len = (uint16_t)(offset - len_offset - 2 - 3 - 2);
-    frame[len_offset] = (ev_len >> 8) & 0xFF;
+    /* Fill bcmilcp length field: total bytes following the length field */
+    uint16_t ev_len = (uint16_t)(offset - len_offset - 2);
+    frame[len_offset]     = (ev_len >> 8) & 0xFF;
     frame[len_offset + 1] = ev_len & 0xFF;
 
-    /* Now fill SDPCM + pad + BDC at the beginning */
+    /* Fill SDPCM + pad + BDC at the beginning */
     sdpcm_fill_header(frame, offset, SDPCM_EVENT_CHANNEL, 14);
+    frame[12] = 0; frame[13] = 0;  /* 2-byte pad */
 
-    /* 2-byte pad at offset 12 */
-    frame[12] = 0; frame[13] = 0;
-
-    /* BDC header at offset 14 */
     bdc_header_t *bdc = (bdc_header_t *)(frame + 14);
     bdc->flags = 0x20;
     bdc->priority = 0;
@@ -214,7 +238,7 @@ static void cyw43_queue_event(uint32_t event_type, uint32_t status,
 /* Queue connection events (simulates successful WiFi join) */
 static void cyw43_queue_connect_events(void) {
     cyw43_queue_event(CYW43_EV_AUTH, CYW43_STATUS_SUCCESS, 0, 0);
-    cyw43_queue_event(CYW43_EV_LINK, CYW43_STATUS_SUCCESS, 0, 0);
+    cyw43_queue_event(CYW43_EV_LINK, CYW43_STATUS_SUCCESS, 0, 1);  /* flags=1: link-up */
     cyw43_queue_event(CYW43_EV_SET_SSID, CYW43_STATUS_SUCCESS, 0, 0);
     cyw43_queue_event(CYW43_EV_PSK_SUP, CYW43_SUP_KEYED, 0, 0);
     cyw43.wifi_state = CYW43_WIFI_CONNECTED;
@@ -513,6 +537,7 @@ static uint32_t cyw43_bus_read(uint32_t addr) {
         uint32_t val = cyw43.bus_int;
         if (rx_queue_count() > 0)
             val |= CYW43_BUS_INT_F2_PKT_AVAIL;  /* = 0x20 = F2_PACKET_AVAILABLE */
+        fprintf(stderr, "[CYW43] INT_REG read: 0x%02X (q=%d)\n", val, rx_queue_count());
         return val;
     }
     case 0x08: /* SPI_STATUS_REGISTER - F2_RX_READY + packet info */
@@ -524,6 +549,7 @@ static uint32_t cyw43_bus_read(uint32_t addr) {
             val |= SPI_STATUS_F2_PKT_AVAILABLE;
             val |= ((uint32_t)(f->len & 0x7FF)) << SPI_STATUS_F2_PKT_LEN_SHIFT;
         }
+        fprintf(stderr, "[CYW43] STATUS_REG read: 0x%08X (q=%d)\n", val, rx_queue_count());
         return val;
     }
     case 0x14: /* SPI_READ_TEST_REGISTER = FEEDBEAD */
@@ -881,9 +907,8 @@ void cyw43_pio_tx_write(uint32_t val) {
                     pio_resp_count = total_words;
                     rx_queue_pop();
 
-                    if (cpu.debug_enabled)
-                        fprintf(stderr, "[CYW43] WLAN RX: delivering %d byte frame\n",
-                                copy_len);
+                    fprintf(stderr, "[CYW43] WLAN RX: delivering %d byte frame (ch=%d seq=%d)\n",
+                            copy_len, f->data[4] & 0x0F, f->data[3]);
                 } else {
                     /* No data - return empty SDPCM (size=0) */
                     pio_resp_count = total_words;
