@@ -392,7 +392,12 @@ static void __attribute__((hot)) jit_execute(jit_block_t *block) {
             goto done;
         }
 
-        total_cycles += timing_lut[instr >> 8];
+        /* Use LUT for static-cost instructions; fall back for dynamic
+         * (PUSH/POP/LDMIA/STMIA where cost = 1 + popcount of reg list) */
+        {
+            uint8_t cyc = timing_lut[instr >> 8];
+            total_cycles += cyc ? cyc : timing_instruction_cycles(instr, 0);
+        }
         pc += 2;
     }
 
