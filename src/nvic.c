@@ -64,23 +64,63 @@ void systick_reset(void) {
     }
 }
 
-/* Tick SysTick timer - called once per CPU step for active core */
+/* Tick SysTick timer - called once per CPU step for active core.
+ * O(1) arithmetic: handles multi-cycle steps without looping.
+ *
+ * The original per-cycle loop behavior:
+ *   1. if cvr > 0: cvr--
+ *   2. if cvr == 0: set COUNTFLAG, reload, pend interrupt
+ *
+ * This means a cycle that decrements cvr to 0 ALSO fires the event
+ * in the same cycle, and the reload value is what the next cycle sees.
+ */
 void systick_tick(uint32_t cycles) {
     systick_state_t *st = systick_cur();
     if (!(st->csr & 1)) return; /* Not enabled */
 
-    for (uint32_t i = 0; i < cycles; i++) {
-        if (st->cvr > 0) {
-            st->cvr--;
-        }
+    uint32_t reload = st->rvr & 0x00FFFFFF;
+    uint32_t remaining = cycles;
+
+    while (remaining > 0) {
         if (st->cvr == 0) {
-            /* Counter reached zero - set COUNTFLAG and reload */
+            /* Counter already at zero from a previous tick — reload and fire.
+             * This consumes one cycle (the cycle that "sees" zero and reloads). */
             st->csr |= (1u << 16); /* COUNTFLAG */
-            st->cvr = st->rvr & 0x00FFFFFF;
-            /* If TICKINT (bit 1) is set, pend SysTick exception */
+            st->cvr = reload;
             if (st->csr & 2) {
                 st->pending = 1;
                 corepool_wake_cores();
+            }
+            remaining--;
+            if (reload == 0) return;
+            continue;
+        }
+
+        if (remaining < st->cvr) {
+            /* Won't reach zero this batch */
+            st->cvr -= remaining;
+            return;
+        }
+
+        /* Will reach zero: consume cvr cycles to hit 0 */
+        remaining -= st->cvr;
+        st->cvr = 0;
+
+        /* The cycle that caused cvr to reach 0 also fires the event */
+        st->csr |= (1u << 16); /* COUNTFLAG */
+        st->cvr = reload;
+        if (st->csr & 2) {
+            st->pending = 1;
+            corepool_wake_cores();
+        }
+        if (reload == 0) return;
+
+        /* Fast-skip full periods if remaining > reload */
+        if (remaining > reload) {
+            uint32_t full_periods = (remaining - 1) / reload;
+            remaining -= full_periods * reload;
+            if (st->csr & 2) {
+                st->pending = 1;
             }
         }
     }
@@ -170,12 +210,19 @@ void nvic_clear_pending(uint32_t irq) {
 /* Set priority for an IRQ on current core */
 void nvic_set_priority(uint32_t irq, uint8_t priority) {
     if (irq < NUM_EXTERNAL_IRQS) {
-        nvic_cur()->priority[irq] = priority & 0xC0;
+        nvic_state_t *ns = nvic_cur();
+        ns->priority[irq] = priority & 0xC0;
+        /* Recompute fast-path flag */
+        ns->priorities_nondefault = 0;
+        for (uint32_t i = 0; i < NUM_EXTERNAL_IRQS; i++) {
+            if (ns->priority[i] != 0) { ns->priorities_nondefault = 1; break; }
+        }
     }
 }
 
 /**
  * Get the highest priority pending IRQ for the active core.
+ * Optimized: fast-path uses CTZ when all priorities are default (0).
  */
 uint32_t nvic_get_pending_irq(void) {
     nvic_state_t *ns = nvic_cur();
@@ -185,22 +232,26 @@ uint32_t nvic_get_pending_irq(void) {
         return 0xFFFFFFFF;
     }
 
+    /* Fast path: if no custom priorities set, lowest IRQ number wins */
+    if (ns->priorities_nondefault == 0) {
+        return (uint32_t)__builtin_ctz(pending_and_enabled);
+    }
+
+    /* Slow path: scan for highest priority (lowest value) */
     uint32_t highest_priority_irq = 0xFFFFFFFF;
     uint8_t highest_priority_value = 0xFF;
+    uint32_t bits = pending_and_enabled;
 
-    for (uint32_t irq = 0; irq < NUM_EXTERNAL_IRQS; irq++) {
-        if ((pending_and_enabled & (1 << irq))) {
-            uint8_t prio = ns->priority[irq] & 0xC0;
+    while (bits) {
+        uint32_t irq = (uint32_t)__builtin_ctz(bits);
+        uint8_t prio = ns->priority[irq] & 0xC0;
 
-            if (prio < highest_priority_value) {
-                highest_priority_value = prio;
-                highest_priority_irq = irq;
-            } else if (prio == highest_priority_value) {
-                if (irq < highest_priority_irq) {
-                    highest_priority_irq = irq;
-                }
-            }
+        if (prio < highest_priority_value ||
+            (prio == highest_priority_value && irq < highest_priority_irq)) {
+            highest_priority_value = prio;
+            highest_priority_irq = irq;
         }
+        bits &= bits - 1; /* Clear lowest set bit */
     }
 
     return highest_priority_irq;
@@ -375,6 +426,11 @@ void nvic_write_register(uint32_t addr, uint32_t val) {
                         if (irq_idx < NUM_EXTERNAL_IRQS) {
                             ns->priority[irq_idx] = (val >> (i * 8)) & 0xFF;
                         }
+                    }
+                    /* Recompute fast-path flag */
+                    ns->priorities_nondefault = 0;
+                    for (uint32_t i = 0; i < NUM_EXTERNAL_IRQS; i++) {
+                        if (ns->priority[i] != 0) { ns->priorities_nondefault = 1; break; }
                     }
                 }
             }

@@ -111,6 +111,7 @@ typedef struct {
     uint32_t shpr2;                 /* System Handler Priority 2 (SVCall) */
     uint32_t shpr3;                 /* System Handler Priority 3 (PendSV, SysTick) */
     int pendsv_pending;             /* PendSV exception pending */
+    int priorities_nondefault;      /* Nonzero if any IRQ priority != 0 (enables fast CTZ path) */
 } nvic_state_t;
 
 /* Functions */

@@ -17,40 +17,36 @@ extern int pc_updated;
 #define FLAG_C 0x20000000  // Carry (bit 29)
 #define FLAG_V 0x10000000  // Overflow (bit 28)
 
-void update_nz_flags(uint32_t result) {
-    cpu.xpsr &= ~(FLAG_N | FLAG_Z);
-    if (result == 0) cpu.xpsr |= FLAG_Z;
-    if (result & 0x80000000) cpu.xpsr |= FLAG_N;
+/* Branchless flag computation for hot paths */
+static inline void update_nz_flags_fast(uint32_t result) {
+    uint32_t flags = 0;
+    if (result == 0) flags = FLAG_Z;
+    else if (result >> 31) flags = FLAG_N;
+    cpu.xpsr = (cpu.xpsr & ~(FLAG_N | FLAG_Z)) | flags;
 }
 
-void update_add_flags(uint32_t op1, uint32_t op2, uint32_t result) {
-    cpu.xpsr &= ~(FLAG_N | FLAG_Z | FLAG_C | FLAG_V);
-
-    // N and Z flags
-    if (result == 0) cpu.xpsr |= FLAG_Z;
-    if (result & 0x80000000) cpu.xpsr |= FLAG_N;
-
-    // Carry flag (unsigned overflow)
-    uint64_t result64 = (uint64_t)op1 + (uint64_t)op2;
-    if (result64 > 0xFFFFFFFF) cpu.xpsr |= FLAG_C;
-
-    // Overflow flag (signed overflow)
-    if (((op1 ^ result) & (op2 ^ result)) & 0x80000000) cpu.xpsr |= FLAG_V;
+static inline void update_add_flags_fast(uint32_t op1, uint32_t op2, uint32_t result) {
+    uint32_t flags = 0;
+    if (result == 0) flags |= FLAG_Z;
+    if (result >> 31) flags |= FLAG_N;
+    if ((uint64_t)op1 + (uint64_t)op2 > 0xFFFFFFFF) flags |= FLAG_C;
+    if (((op1 ^ result) & (op2 ^ result)) >> 31) flags |= FLAG_V;
+    cpu.xpsr = (cpu.xpsr & ~(FLAG_N | FLAG_Z | FLAG_C | FLAG_V)) | flags;
 }
 
-void update_sub_flags(uint32_t op1, uint32_t op2, uint32_t result) {
-    cpu.xpsr &= ~(FLAG_N | FLAG_Z | FLAG_C | FLAG_V);
-
-    // N and Z flags
-    if (result == 0) cpu.xpsr |= FLAG_Z;
-    if (result & 0x80000000) cpu.xpsr |= FLAG_N;
-
-    // Carry flag (NOT borrow - set if op1 >= op2)
-    if (op1 >= op2) cpu.xpsr |= FLAG_C;
-
-    // Overflow flag (signed overflow)
-    if (((op1 ^ op2) & (op1 ^ result)) & 0x80000000) cpu.xpsr |= FLAG_V;
+static inline void update_sub_flags_fast(uint32_t op1, uint32_t op2, uint32_t result) {
+    uint32_t flags = 0;
+    if (result == 0) flags |= FLAG_Z;
+    if (result >> 31) flags |= FLAG_N;
+    if (op1 >= op2) flags |= FLAG_C;
+    if (((op1 ^ op2) & (op1 ^ result)) >> 31) flags |= FLAG_V;
+    cpu.xpsr = (cpu.xpsr & ~(FLAG_N | FLAG_Z | FLAG_C | FLAG_V)) | flags;
 }
+
+/* External linkage wrappers for callers outside this file */
+void update_nz_flags(uint32_t result) { update_nz_flags_fast(result); }
+void update_add_flags(uint32_t op1, uint32_t op2, uint32_t result) { update_add_flags_fast(op1, op2, result); }
+void update_sub_flags(uint32_t op1, uint32_t op2, uint32_t result) { update_sub_flags_fast(op1, op2, result); }
 
 uint32_t sign_extend_8(uint8_t value) {
     return (value & 0x80) ? (value | 0xFFFFFF00) : value;
@@ -73,7 +69,7 @@ void instr_adds_imm3(uint16_t instr) {
     uint32_t op1 = cpu.r[reg_src];
     uint32_t result = op1 + imm;
     cpu.r[reg_dst] = result;
-    update_add_flags(op1, imm, result);
+    update_add_flags_fast(op1, imm, result);
 }
 
 void instr_adds_imm8(uint16_t instr) {
@@ -82,7 +78,7 @@ void instr_adds_imm8(uint16_t instr) {
     uint32_t op1 = cpu.r[reg];
     uint32_t result = op1 + imm;
     cpu.r[reg] = result;
-    update_add_flags(op1, imm, result);
+    update_add_flags_fast(op1, imm, result);
 }
 
 void instr_subs_imm3(uint16_t instr) {
@@ -92,7 +88,7 @@ void instr_subs_imm3(uint16_t instr) {
     uint32_t op1 = cpu.r[reg_src];
     uint32_t result = op1 - imm;
     cpu.r[reg_dst] = result;
-    update_sub_flags(op1, imm, result);
+    update_sub_flags_fast(op1, imm, result);
 }
 
 void instr_subs_imm8(uint16_t instr) {
@@ -101,14 +97,14 @@ void instr_subs_imm8(uint16_t instr) {
     uint32_t op1 = cpu.r[reg];
     uint32_t result = op1 - imm;
     cpu.r[reg] = result;
-    update_sub_flags(op1, imm, result);
+    update_sub_flags_fast(op1, imm, result);
 }
 
 void instr_movs_imm8(uint16_t instr) {
     uint8_t reg = (instr >> 8) & 0x07;
     uint8_t imm = instr & 0xFF;
     cpu.r[reg] = imm;
-    update_nz_flags(imm);
+    update_nz_flags_fast(imm);
 }
 
 void instr_adds_reg_reg(uint16_t instr) {
@@ -119,7 +115,7 @@ void instr_adds_reg_reg(uint16_t instr) {
     uint32_t op2 = cpu.r[rm];
     uint32_t result = op1 + op2;
     cpu.r[rd] = result;
-    update_add_flags(op1, op2, result);
+    update_add_flags_fast(op1, op2, result);
 }
 
 void instr_add_reg_high(uint16_t instr) {
@@ -143,7 +139,7 @@ void instr_sub_reg_reg(uint16_t instr) {
     uint32_t op2 = cpu.r[rm];
     uint32_t result = op1 - op2;
     cpu.r[rd] = result;
-    update_sub_flags(op1, op2, result);
+    update_sub_flags_fast(op1, op2, result);
 }
 
 void instr_cmp_imm8(uint16_t instr) {
@@ -151,7 +147,7 @@ void instr_cmp_imm8(uint16_t instr) {
     uint8_t imm = instr & 0xFF;
     uint32_t op1 = cpu.r[reg];
     uint32_t result = op1 - imm;
-    update_sub_flags(op1, imm, result);
+    update_sub_flags_fast(op1, imm, result);
 }
 
 /* CMP with high registers (0x4500-0x45FF): 4-bit register fields */
@@ -161,7 +157,7 @@ void instr_cmp_reg_reg(uint16_t instr) {
     uint32_t op1 = cpu.r[reg_dst];
     uint32_t op2 = cpu.r[reg_src];
     uint32_t result = op1 - op2;
-    update_sub_flags(op1, op2, result);
+    update_sub_flags_fast(op1, op2, result);
 }
 
 /* CMP in ALU block (0x4280-0x42BF): 3-bit register fields only */
@@ -171,7 +167,7 @@ void instr_cmp_alu(uint16_t instr) {
     uint32_t op1 = cpu.r[rn];
     uint32_t op2 = cpu.r[rm];
     uint32_t result = op1 - op2;
-    update_sub_flags(op1, op2, result);
+    update_sub_flags_fast(op1, op2, result);
 }
 
 /* ============ Memory Instructions ============ */
@@ -562,42 +558,42 @@ void instr_tst_reg_reg(uint16_t instr) {
     uint8_t reg_src = (instr >> 3) & 0x07;
     uint8_t reg_dst = instr & 0x07;
     uint32_t result = cpu.r[reg_dst] & cpu.r[reg_src];
-    update_nz_flags(result);
+    update_nz_flags_fast(result);
 }
 
 void instr_bitwise_and(uint16_t instr) {
     uint8_t reg_src = (instr >> 3) & 0x07;
     uint8_t reg_dst = instr & 0x07;
     cpu.r[reg_dst] &= cpu.r[reg_src];
-    update_nz_flags(cpu.r[reg_dst]);
+    update_nz_flags_fast(cpu.r[reg_dst]);
 }
 
 void instr_bitwise_eor(uint16_t instr) {
     uint8_t reg_src = (instr >> 3) & 0x07;
     uint8_t reg_dst = instr & 0x07;
     cpu.r[reg_dst] ^= cpu.r[reg_src];
-    update_nz_flags(cpu.r[reg_dst]);
+    update_nz_flags_fast(cpu.r[reg_dst]);
 }
 
 void instr_bitwise_orr(uint16_t instr) {
     uint8_t reg_src = (instr >> 3) & 0x07;
     uint8_t reg_dst = instr & 0x07;
     cpu.r[reg_dst] |= cpu.r[reg_src];
-    update_nz_flags(cpu.r[reg_dst]);
+    update_nz_flags_fast(cpu.r[reg_dst]);
 }
 
 void instr_bitwise_bic(uint16_t instr) {
     uint8_t reg_src = (instr >> 3) & 0x07;
     uint8_t reg_dst = instr & 0x07;
     cpu.r[reg_dst] &= ~cpu.r[reg_src];
-    update_nz_flags(cpu.r[reg_dst]);
+    update_nz_flags_fast(cpu.r[reg_dst]);
 }
 
 void instr_bitwise_mvn(uint16_t instr) {
     uint8_t reg_src = (instr >> 3) & 0x07;
     uint8_t reg_dst = instr & 0x07;
     cpu.r[reg_dst] = ~cpu.r[reg_src];
-    update_nz_flags(cpu.r[reg_dst]);
+    update_nz_flags_fast(cpu.r[reg_dst]);
 }
 
 /* ============ Shift Instructions ============ */
@@ -617,7 +613,7 @@ void instr_shift_logical_left(uint16_t instr) {
         }
         cpu.r[reg_dst] = cpu.r[reg_src] << imm;
     }
-    update_nz_flags(cpu.r[reg_dst]);
+    update_nz_flags_fast(cpu.r[reg_dst]);
 }
 
 void instr_shift_logical_right(uint16_t instr) {
@@ -637,7 +633,7 @@ void instr_shift_logical_right(uint16_t instr) {
         }
         cpu.r[reg_dst] = cpu.r[reg_src] >> imm;
     }
-    update_nz_flags(cpu.r[reg_dst]);
+    update_nz_flags_fast(cpu.r[reg_dst]);
 }
 
 void instr_shift_arithmetic_right(uint16_t instr) {
@@ -661,7 +657,7 @@ void instr_shift_arithmetic_right(uint16_t instr) {
         }
         cpu.r[reg_dst] = ((int32_t)cpu.r[reg_src]) >> imm;
     }
-    update_nz_flags(cpu.r[reg_dst]);
+    update_nz_flags_fast(cpu.r[reg_dst]);
 }
 
 void instr_lsls_reg(uint16_t instr) {
@@ -675,16 +671,16 @@ void instr_lsls_reg(uint16_t instr) {
         if (cpu.r[rd] & (1 << (32 - shift))) cpu.xpsr |= FLAG_C;
         else cpu.xpsr &= ~FLAG_C;
         cpu.r[rd] <<= shift;
-        update_nz_flags(cpu.r[rd]);
+        update_nz_flags_fast(cpu.r[rd]);
     } else if (shift == 32) {
         if (cpu.r[rd] & 1) cpu.xpsr |= FLAG_C;
         else cpu.xpsr &= ~FLAG_C;
         cpu.r[rd] = 0;
-        update_nz_flags(0);
+        update_nz_flags_fast(0);
     } else {
         cpu.xpsr &= ~FLAG_C;
         cpu.r[rd] = 0;
-        update_nz_flags(0);
+        update_nz_flags_fast(0);
     }
 }
 
@@ -699,16 +695,16 @@ void instr_lsrs_reg(uint16_t instr) {
         if (cpu.r[rd] & (1 << (shift - 1))) cpu.xpsr |= FLAG_C;
         else cpu.xpsr &= ~FLAG_C;
         cpu.r[rd] >>= shift;
-        update_nz_flags(cpu.r[rd]);
+        update_nz_flags_fast(cpu.r[rd]);
     } else if (shift == 32) {
         if (cpu.r[rd] & 0x80000000) cpu.xpsr |= FLAG_C;
         else cpu.xpsr &= ~FLAG_C;
         cpu.r[rd] = 0;
-        update_nz_flags(0);
+        update_nz_flags_fast(0);
     } else {
         cpu.xpsr &= ~FLAG_C;
         cpu.r[rd] = 0;
-        update_nz_flags(0);
+        update_nz_flags_fast(0);
     }
 }
 
@@ -723,7 +719,7 @@ void instr_asrs_reg(uint16_t instr) {
         if (cpu.r[rd] & (1 << (shift - 1))) cpu.xpsr |= FLAG_C;
         else cpu.xpsr &= ~FLAG_C;
         cpu.r[rd] = ((int32_t)cpu.r[rd]) >> shift;
-        update_nz_flags(cpu.r[rd]);
+        update_nz_flags_fast(cpu.r[rd]);
     } else {
         if (cpu.r[rd] & 0x80000000) {
             cpu.xpsr |= FLAG_C;
@@ -732,7 +728,7 @@ void instr_asrs_reg(uint16_t instr) {
             cpu.xpsr &= ~FLAG_C;
             cpu.r[rd] = 0;
         }
-        update_nz_flags(cpu.r[rd]);
+        update_nz_flags_fast(cpu.r[rd]);
     }
 }
 
@@ -754,7 +750,7 @@ void instr_rors_reg(uint16_t instr) {
         if (result & 0x80000000) cpu.xpsr |= FLAG_C;
         else cpu.xpsr &= ~FLAG_C;
         cpu.r[rd] = result;
-        update_nz_flags(result);
+        update_nz_flags_fast(result);
     }
 }
 
@@ -765,7 +761,7 @@ void instr_muls(uint16_t instr) {
     uint8_t rm = (instr >> 3) & 0x07;
 
     cpu.r[rd] = cpu.r[rd] * cpu.r[rm];
-    update_nz_flags(cpu.r[rd]);
+    update_nz_flags_fast(cpu.r[rd]);
 }
 
 void instr_adcs(uint16_t instr) {
@@ -810,7 +806,7 @@ void instr_rsbs(uint16_t instr) {
     uint32_t op2 = cpu.r[rm];
     uint32_t result = 0 - op2;
     cpu.r[rd] = result;
-    update_sub_flags(0, op2, result);
+    update_sub_flags_fast(0, op2, result);
 }
 
 // ============================================================================
@@ -823,14 +819,14 @@ void instr_cmn_reg(uint16_t instr) {
     uint32_t op1 = cpu.r[rn];
     uint32_t op2 = cpu.r[rm];
     uint32_t result = op1 + op2;
-    update_add_flags(op1, op2, result);
+    update_add_flags_fast(op1, op2, result);
 }
 
 void instr_teq_reg(uint16_t instr) {
     uint8_t rn = instr & 0x07;
     uint8_t rm = (instr >> 3) & 0x07;
     uint32_t result = cpu.r[rn] ^ cpu.r[rm];
-    update_nz_flags(result);
+    update_nz_flags_fast(result);
 }
 
 void instr_svc(uint16_t instr) {

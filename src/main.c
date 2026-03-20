@@ -802,8 +802,6 @@ int main(int argc, char **argv) {
             dual_core_step();
             pio_step();
             usb_step();
-            instruction_count += (!cores[CORE0].is_halted && !cores[CORE0].is_wfi) +
-                                (!cores[CORE1].is_halted && !cores[CORE1].is_wfi);
             step_count++;
 
             /* Poll stdin for UART Rx data every 1024 steps */
@@ -825,6 +823,7 @@ int main(int argc, char **argv) {
             }
 
             if (show_status && (step_count % 1000 == 0)) {
+                instruction_count = cores[CORE0].step_count + cores[CORE1].step_count;
                 fprintf(stderr,"[Status] Step %u (Inst %u)\n", step_count, instruction_count);
                 fprintf(stderr," Core 0: PC=0x%08X SP=0x%08X %s%s\n",
                        cores[CORE0].r[15], cores[CORE0].r[13],
@@ -851,6 +850,7 @@ int main(int argc, char **argv) {
             }
 
             /* Safety limit: prevent infinite loops (disabled in interactive/GDB mode) */
+            instruction_count = cores[CORE0].step_count + cores[CORE1].step_count;
             if (!gdb_enabled && !stdin_enabled && instruction_count > 1000000000) {
                 fprintf(stderr,"[Warning] Instruction limit reached (1B)\n");
                 break;

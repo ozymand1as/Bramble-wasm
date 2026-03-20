@@ -61,90 +61,67 @@ void timing_set_clock_mhz(uint32_t mhz) {
  * MSR/MRS: 4 cycles
  * DSB/DMB/ISB: 3 cycles
  */
-uint32_t timing_instruction_cycles(uint16_t instr, int branch_taken) {
-    uint8_t top8 = instr >> 8;
+/*
+ * Timing lookup table: base cycle cost per top8 value.
+ * Special values: 0 = needs dynamic computation (PUSH/POP/LDM/STM/Bcond).
+ * Initialized by timing_init_lut().
+ */
+static uint8_t timing_lut[256];
+static int timing_lut_initialized = 0;
 
-    /* Shifts (top8 0x00-0x17): LSL/LSR/ASR imm5 — 1 cycle */
-    if (top8 <= 0x17) return 1;
-
-    /* ADD/SUB reg/imm3 (top8 0x18-0x1F) — 1 cycle */
-    if (top8 <= 0x1F) return 1;
-
-    /* MOVS/CMP/ADDS/SUBS imm8 (top8 0x20-0x3F) — 1 cycle */
-    if (top8 <= 0x3F) return 1;
-
-    /* ALU operations (0x40-0x43): 1 cycle */
-    if (top8 <= 0x43) return 1;
-
-    /* Special data processing (0x44-0x46): ADD/CMP/MOV high regs: 1 cycle */
-    if (top8 <= 0x46) return 1;
+static void timing_init_lut(void) {
+    /* Default: 1 cycle */
+    memset(timing_lut, 1, sizeof(timing_lut));
 
     /* BX/BLX register (0x47): 3 cycles */
-    if (top8 == 0x47) return 3;
+    timing_lut[0x47] = 3;
 
-    /* LDR Rd, [PC, #imm8] (0x48-0x4F): 2 cycles */
-    if (top8 <= 0x4F) return 2;
+    /* Load/store: 2 cycles (0x48-0x9F) */
+    for (int i = 0x48; i <= 0x9F; i++) timing_lut[i] = 2;
 
-    /* Load/store register offset (0x50-0x5F): 2 cycles */
-    if (top8 <= 0x5F) return 2;
+    /* PUSH/POP: dynamic (0 = compute) */
+    timing_lut[0xB4] = 0; timing_lut[0xB5] = 0;
+    timing_lut[0xBC] = 0; timing_lut[0xBD] = 0;
 
-    /* STR/LDR imm5 word (0x60-0x6F): 2 cycles */
-    if (top8 <= 0x6F) return 2;
+    /* STMIA/LDMIA: dynamic */
+    for (int i = 0xC0; i <= 0xCF; i++) timing_lut[i] = 0;
 
-    /* STRB/LDRB imm5 (0x70-0x7F): 2 cycles */
-    if (top8 <= 0x7F) return 2;
+    /* Conditional branch: dynamic (depends on taken/not-taken) */
+    for (int i = 0xD0; i <= 0xDD; i++) timing_lut[i] = 0;
 
-    /* STRH/LDRH imm5 (0x80-0x8F): 2 cycles */
-    if (top8 <= 0x8F) return 2;
+    /* Unconditional branch: 2 cycles */
+    for (int i = 0xE0; i <= 0xE7; i++) timing_lut[i] = 2;
 
-    /* STR/LDR SP-relative (0x90-0x9F): 2 cycles */
-    if (top8 <= 0x9F) return 2;
+    timing_lut_initialized = 1;
+}
 
-    /* ADR (0xA0-0xA7): 1 cycle */
-    if (top8 >= 0xA0 && top8 <= 0xA7) return 1;
+uint32_t timing_instruction_cycles(uint16_t instr, int branch_taken) {
+    uint8_t top8 = instr >> 8;
+    uint8_t base = timing_lut[top8];
 
-    /* ADD Rd, SP, #imm8 (0xA8-0xAF): 1 cycle */
-    if (top8 >= 0xA8 && top8 <= 0xAF) return 1;
+    if (__builtin_expect(base != 0, 1)) return base;
 
-    /* Miscellaneous 16-bit (0xB0-0xBF) */
-    if (top8 == 0xB0) return 1;  /* ADD/SUB SP */
-    if (top8 == 0xB2) return 1;  /* SXTH/SXTB/UXTH/UXTB */
+    /* Dynamic cases */
     if (top8 == 0xB4 || top8 == 0xB5) {
-        /* PUSH: 1 + N (count set bits in reglist + LR bit) */
-        int n = __builtin_popcount(instr & 0xFF) + ((instr >> 8) & 1);
-        return 1 + (uint32_t)n;
+        /* PUSH: 1 + N */
+        return 1 + (uint32_t)__builtin_popcount(instr & 0xFF) + ((instr >> 8) & 1);
     }
-    if (top8 == 0xB6) return 1;  /* CPS */
-    if (top8 == 0xBA) return 1;  /* REV/REV16/REVSH */
     if (top8 == 0xBC || top8 == 0xBD) {
-        /* POP: 1 + N (count set bits in reglist + PC bit) */
+        /* POP: 1 + N (+ 1 if popping PC) */
         int n = __builtin_popcount(instr & 0xFF) + ((instr >> 8) & 1);
-        /* If popping PC, extra pipeline refill cycle */
         if (instr & 0x100) n++;
         return 1 + (uint32_t)n;
     }
-    if (top8 == 0xBE) return 1;  /* BKPT */
-    if (top8 == 0xBF) return 1;  /* NOP/hints */
-
-    /* STMIA/LDMIA (0xC0-0xCF): 1 + N */
     if (top8 >= 0xC0 && top8 <= 0xCF) {
-        int n = __builtin_popcount(instr & 0xFF);
-        return 1 + (uint32_t)n;
+        /* STMIA/LDMIA: 1 + N */
+        return 1 + (uint32_t)__builtin_popcount(instr & 0xFF);
+    }
+    if (top8 >= 0xD0 && top8 <= 0xDD) {
+        /* Conditional branch: 1 not taken, 2 taken */
+        return branch_taken ? 2 : 1;
     }
 
-    /* Conditional branch (0xD0-0xDD): 1 if not taken, 2 if taken */
-    if (top8 >= 0xD0 && top8 <= 0xDD) return branch_taken ? 2 : 1;
-
-    /* UDF (0xDE): 1 cycle */
-    if (top8 == 0xDE) return 1;
-
-    /* SVC (0xDF): triggers exception entry, counted separately */
-    if (top8 == 0xDF) return 1;
-
-    /* Unconditional branch (0xE0-0xE7): 2 cycles (always taken) */
-    if (top8 >= 0xE0 && top8 <= 0xE7) return 2;
-
-    return 1;  /* Default */
+    return 1;
 }
 
 uint32_t timing_instruction_cycles_32(uint16_t upper, uint16_t lower) {
@@ -184,17 +161,21 @@ static void timing_tick(uint32_t cycles);
 
 static inline uint16_t cpu_fetch16_fast(uint32_t pc) {
     if (pc < ROM_SIZE - 1) {
-        return (uint16_t)rom_image[pc] | ((uint16_t)rom_image[pc + 1] << 8);
+        uint16_t val;
+        memcpy(&val, &rom_image[pc], 2);
+        return val;
     }
 
     if (pc >= FLASH_BASE && pc + 1 < FLASH_BASE + FLASH_SIZE) {
-        uint32_t offset = pc - FLASH_BASE;
-        return (uint16_t)cpu.flash[offset] | ((uint16_t)cpu.flash[offset + 1] << 8);
+        uint16_t val;
+        memcpy(&val, &cpu.flash[pc - FLASH_BASE], 2);
+        return val;
     }
 
     if (pc >= RAM_BASE && pc + 1 < RAM_TOP) {
-        uint32_t offset = pc - RAM_BASE;
-        return (uint16_t)cpu.ram[offset] | ((uint16_t)cpu.ram[offset + 1] << 8);
+        uint16_t val;
+        memcpy(&val, &cpu.ram[pc - RAM_BASE], 2);
+        return val;
     }
 
     return mem_read16(pc);
@@ -277,8 +258,8 @@ void icache_invalidate_all(void) {
  * to JIT_BLOCK_MAX_INSN instructions (~32 cycles worst case).
  * ======================================================================== */
 
-#define JIT_BLOCK_MAX_INSN   32
-#define JIT_CACHE_BLOCKS     4096
+#define JIT_BLOCK_MAX_INSN   64
+#define JIT_CACHE_BLOCKS     16384
 #define JIT_CACHE_BMASK      (JIT_CACHE_BLOCKS - 1)
 
 typedef struct {
@@ -393,13 +374,14 @@ static jit_block_t *jit_compile(uint32_t pc) {
 /* Execute a compiled block.
  * Assumes interrupt check already done by caller.
  * Updates cpu.r[15], cpu.step_count, and calls timing_tick(). */
-static void jit_execute(jit_block_t *block) {
+static void __attribute__((hot)) jit_execute(jit_block_t *block) {
     uint32_t pc = block->start_pc;
     uint32_t total_cycles = 0;
+    int len = block->length;
+    int i;
 
-    for (int i = 0; i < block->length; i++) {
+    for (i = 0; i < len; i++) {
         cpu.r[15] = pc;
-        cpu.step_count++;
 
         pc_updated = 0;
         block->handlers[i](block->instrs[i]);
@@ -408,17 +390,21 @@ static void jit_execute(jit_block_t *block) {
             /* Branch or control flow change — use actual branch cost */
             int branch_taken = (cpu.r[15] != pc + 2);
             total_cycles += timing_instruction_cycles(block->instrs[i], branch_taken);
+            i++; /* Count this instruction */
             break;
         }
 
         total_cycles += block->insn_cycles[i];
         pc += 2;
-        cpu.r[15] = pc;
     }
+
+    /* Batch step_count update */
+    cpu.step_count += (uint32_t)i;
+    cpu.r[15] = pc_updated ? cpu.r[15] : pc;
 
     block->exec_count++;
     jit_block_exec++;
-    jit_insns_saved += block->length > 1 ? block->length - 1 : 0;
+    jit_insns_saved += i > 1 ? (uint64_t)(i - 1) : 0;
     timing_tick(total_cycles);
 }
 
@@ -761,6 +747,11 @@ void cpu_init(void) {
     /* Initialize memory bus to use cpu.ram */
     mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
 
+    /* Initialize timing lookup table */
+    if (!timing_lut_initialized) {
+        timing_init_lut();
+    }
+
     /* Initialize dispatch table */
     if (!dispatch_initialized) {
         init_dispatch_table();
@@ -993,7 +984,7 @@ void cpu_exception_return(uint32_t lr_value) {
  * advance the timer by 1 µs.
  * ======================================================================== */
 
-static void timing_tick(uint32_t cycles) {
+static void __attribute__((hot)) timing_tick(uint32_t cycles) {
     /* Timer and RTC: advance from Core 0 in the normal case, but let the
      * currently executing core own shared time whenever Core 0 is asleep or
      * halted so dual-core workloads do not starve the system timer. */
@@ -1006,12 +997,15 @@ static void timing_tick(uint32_t cycles) {
     }
 
     if (advance_shared_time) {
-        timing_config.cycle_accumulator += cycles;
-        uint32_t us = timing_config.cycle_accumulator / timing_config.cycles_per_us;
-        if (us > 0) {
-            timing_config.cycle_accumulator -= us * timing_config.cycles_per_us;
+        uint32_t acc = timing_config.cycle_accumulator + cycles;
+        uint32_t cpus = timing_config.cycles_per_us;
+        if (acc >= cpus) {
+            uint32_t us = acc / cpus;
+            timing_config.cycle_accumulator = acc - us * cpus;
             timer_tick(us);
             rtc_tick(us);
+        } else {
+            timing_config.cycle_accumulator = acc;
         }
     }
     /* SysTick counts in CPU cycles, not microseconds (per-core on real RP2040) */
@@ -1022,19 +1016,28 @@ static void timing_tick(uint32_t cycles) {
  * Single-Core CPU Execution (Dispatch Table)
  * ======================================================================== */
 
-void cpu_step(void) {
+__attribute__((hot)) void cpu_step(void) {
     uint32_t pc = cpu.r[15];
 
-    /* Stop if PC already out of range */
-    if (pc == 0xFFFFFFFF) {
-        return;
+    /* Fast path: most PCs are in flash (0x10000000-0x101FFFFF) */
+    if (__builtin_expect(pc - FLASH_BASE < FLASH_SIZE, 1)) {
+        goto pc_valid;
     }
 
-    /* Allow execution from ROM, flash, or RAM */
-    if (!(pc < ROM_SIZE ||
-          (pc >= FLASH_BASE && pc < FLASH_BASE + FLASH_SIZE) ||
-          (pc >= RAM_BASE && pc < RAM_TOP))) {
-        /* HardFault: PC out of executable range */
+    /* Secondary paths: ROM, RAM, or invalid */
+    if (pc < ROM_SIZE) {
+        /* ROM function interception (float/double/flash) */
+        if (rom_intercept(pc)) {
+            timing_tick(4);
+            return;
+        }
+        goto pc_valid;
+    }
+    if (pc >= RAM_BASE && pc < RAM_TOP) goto pc_valid;
+    if (pc == 0xFFFFFFFF) return;
+
+    /* HardFault: PC out of executable range */
+    {
         uint32_t handler = mem_read32(cpu.vtor + EXC_HARDFAULT * 4);
         if (handler && handler != 0xFFFFFFFF) {
             if (cpu.debug_enabled) {
@@ -1050,56 +1053,60 @@ void cpu_step(void) {
         return;
     }
 
-    /* ROM function interception (float/double/flash) */
-    if (pc < ROM_SIZE && rom_intercept(pc)) {
-        timing_tick(4);  /* ROM functions take ~4 cycles */
-        return;
-    }
-
+pc_valid:
     /* Check for pending interrupts (only if PRIMASK allows) */
     if (!cpu.primask) {
-        /* Get active exception priority (0xFF if no active exception) */
-        uint8_t active_pri = 0xFF;
-        if (cpu.current_irq != 0xFFFFFFFF) {
-            active_pri = nvic_get_exception_priority(cpu.current_irq);
-        }
+        int ac = get_active_core();
+        nvic_state_t *ns = &nvic_states[ac];
 
-        /* Check external IRQs (uses active core's NVIC) */
-        uint32_t pending_irq = nvic_get_pending_irq();
-        if (pending_irq != 0xFFFFFFFF) {
-            uint8_t pending_pri = nvic_states[get_active_core()].priority[pending_irq] & 0xC0;
-            /* Only deliver if strictly higher priority (lower number) */
-            if (pending_pri < active_pri) {
-                if (cpu.debug_enabled) {
-                    printf("[CPU] *** INTERRUPT: IRQ %u (pri=0x%02X) preempting (active_pri=0x%02X) ***\n",
-                           pending_irq, pending_pri, active_pri);
+        /* Quick check: anything pending at all? */
+        int any_pending = (ns->pending & ns->enable) |
+                          systick_states[ac].pending |
+                          ns->pendsv_pending;
+
+        if (any_pending) {
+            /* Get active exception priority (0xFF if no active exception) */
+            uint8_t active_pri = 0xFF;
+            if (cpu.current_irq != 0xFFFFFFFF) {
+                active_pri = nvic_get_exception_priority(cpu.current_irq);
+            }
+
+            /* Check external IRQs */
+            uint32_t pending_irq = nvic_get_pending_irq();
+            if (pending_irq != 0xFFFFFFFF) {
+                uint8_t pending_pri = ns->priority[pending_irq] & 0xC0;
+                if (pending_pri < active_pri) {
+                    if (cpu.debug_enabled) {
+                        printf("[CPU] *** INTERRUPT: IRQ %u (pri=0x%02X) preempting (active_pri=0x%02X) ***\n",
+                               pending_irq, pending_pri, active_pri);
+                    }
+                    nvic_clear_pending(pending_irq);
+                    cpu_exception_entry(pending_irq + 16);
+                    timing_tick(1);
+                    return;
                 }
-                nvic_clear_pending(pending_irq);
-                cpu_exception_entry(pending_irq + 16);
-                timing_tick(1);
-                return;
             }
-        }
 
-        /* Check SysTick pending (per-core) */
-        if (systick_states[get_active_core()].pending) {
-            uint8_t systick_pri = nvic_get_exception_priority(EXC_SYSTICK);
-            if (systick_pri < active_pri) {
-                systick_states[get_active_core()].pending = 0;
-                cpu_exception_entry(EXC_SYSTICK);
-                timing_tick(1);
-                return;
+            /* Check SysTick pending (per-core) */
+            if (systick_states[ac].pending) {
+                uint8_t systick_pri = nvic_get_exception_priority(EXC_SYSTICK);
+                if (systick_pri < active_pri) {
+                    systick_states[ac].pending = 0;
+                    cpu_exception_entry(EXC_SYSTICK);
+                    timing_tick(1);
+                    return;
+                }
             }
-        }
 
-        /* Check PendSV pending (per-core) */
-        if (nvic_states[get_active_core()].pendsv_pending) {
-            uint8_t pendsv_pri = nvic_get_exception_priority(EXC_PENDSV);
-            if (pendsv_pri < active_pri) {
-                nvic_states[get_active_core()].pendsv_pending = 0;
-                cpu_exception_entry(EXC_PENDSV);
-                timing_tick(1);
-                return;
+            /* Check PendSV pending (per-core) */
+            if (ns->pendsv_pending) {
+                uint8_t pendsv_pri = nvic_get_exception_priority(EXC_PENDSV);
+                if (pendsv_pri < active_pri) {
+                    ns->pendsv_pending = 0;
+                    cpu_exception_entry(EXC_PENDSV);
+                    timing_tick(1);
+                    return;
+                }
             }
         }
     }
@@ -1396,6 +1403,9 @@ void cpu_step_core(int core_id) {
     mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
 }
 
+/* Number of instructions each core runs per scheduling quantum in cooperative mode */
+#define DUAL_CORE_QUANTUM 8
+
 void dual_core_step(void) {
     static int current = 0;
 
@@ -1433,7 +1443,14 @@ void dual_core_step(void) {
             cores[c].is_wfi = 0;  /* Wake up */
         }
 
-        cpu_step_core(c);
+        /* Batch multiple steps per context switch to amortize save/restore */
+        cpu_bind_context_t ctx;
+        if (!cpu_bind_core_context(c, &ctx)) continue;
+        for (int s = 0; s < DUAL_CORE_QUANTUM; s++) {
+            cpu_step();
+            if (cores[c].is_wfi || cpu.r[15] == 0xFFFFFFFF) break;
+        }
+        cpu_unbind_core_context(c, &ctx);
     }
 }
 
