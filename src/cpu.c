@@ -426,11 +426,15 @@ done:
     timing_tick(total_cycles);
 }
 
-/* Invalidate JIT blocks containing a specific address (for RAM writes) */
+/* Invalidate JIT blocks that overlap a written address.
+ * JIT only compiles flash/ROM code (immutable), so RAM writes — the
+ * overwhelmingly common case — can never affect a compiled block.
+ * Without this early-return, every STR/STMIA would scan all 16 K blocks. */
 void jit_invalidate_addr(uint32_t addr) {
     if (!jit_enabled) return;
-    /* Only RAM-based code needs invalidation (flash/ROM is immutable) */
-    if (addr < RAM_BASE || addr >= RAM_TOP) return;
+    /* RAM writes: JIT blocks never contain RAM PCs, so nothing to do */
+    if (addr >= RAM_BASE && addr < RAM_TOP) return;
+    /* Rare: flash/ROM write (e.g. ROM flash_range_program) */
     for (int i = 0; i < JIT_CACHE_BLOCKS; i++) {
         if (jit_cache[i].start_pc == ICACHE_TAG_EMPTY) continue;
         uint32_t end_pc = jit_cache[i].start_pc + (uint32_t)jit_cache[i].length * 2;
@@ -442,7 +446,7 @@ void jit_invalidate_addr(uint32_t addr) {
 
 void jit_invalidate_range(uint32_t addr, uint32_t size) {
     if (!jit_enabled) return;
-    if (addr < RAM_BASE || addr >= RAM_TOP) return;
+    if (addr >= RAM_BASE && addr < RAM_TOP) return;
     for (int i = 0; i < JIT_CACHE_BLOCKS; i++) {
         if (jit_cache[i].start_pc == ICACHE_TAG_EMPTY) continue;
         uint32_t blk_end = jit_cache[i].start_pc + (uint32_t)jit_cache[i].length * 2;
