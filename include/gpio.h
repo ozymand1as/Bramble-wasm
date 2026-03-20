@@ -30,8 +30,9 @@
 #define GPIO_STATUS_OFFSET  0x000  /* GPIO status register */
 #define GPIO_CTRL_OFFSET    0x004  /* GPIO control register */
 
-/* Number of GPIO pins on RP2040 */
-#define NUM_GPIO_PINS       30
+/* Number of GPIO pins (48 on RP2350, 30 used on RP2040) */
+#define NUM_GPIO_PINS       48
+#define NUM_GPIO_PINS_RP2040 30
 
 /* GPIO Function Select Values */
 #define GPIO_FUNC_XIP       0
@@ -65,11 +66,11 @@ typedef struct {
         uint32_t ctrl;       /* GPIO control register */
     } pins[NUM_GPIO_PINS];
 
-    /* Interrupt registers */
-    uint32_t intr[4];        /* Raw interrupt status (8 pins per register) */
-    uint32_t proc0_inte[4];  /* Interrupt enable for processor 0 */
-    uint32_t proc0_intf[4];  /* Interrupt force for processor 0 */
-    uint32_t proc0_ints[4];  /* Interrupt status for processor 0 */
+    /* Interrupt registers (6 regs: 8 pins per reg, 48 pins total) */
+    uint32_t intr[6];        /* Raw interrupt status (8 pins per register) */
+    uint32_t proc0_inte[6];  /* Interrupt enable for processor 0 */
+    uint32_t proc0_intf[6];  /* Interrupt force for processor 0 */
+    uint32_t proc0_ints[6];  /* Interrupt status for processor 0 */
 
     /* Pad control registers */
     uint32_t pads[NUM_GPIO_PINS];

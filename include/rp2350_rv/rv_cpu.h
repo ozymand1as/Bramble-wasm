@@ -26,6 +26,7 @@
 #define CSR_MISA        0x301
 #define CSR_MIE         0x304
 #define CSR_MTVEC       0x305
+#define CSR_MCOUNTEREN  0x306
 #define CSR_MSCRATCH    0x340
 #define CSR_MEPC        0x341
 #define CSR_MCAUSE      0x342
@@ -39,6 +40,21 @@
 #define CSR_MARCHID     0xF12
 #define CSR_MIMPID      0xF13
 #define CSR_MHARTID     0xF14
+
+/* Hazard3-specific CSRs for external interrupt routing */
+#define CSR_MEIE0       0xBE0  /* External IRQ enable bits [31:0] */
+#define CSR_MEIE1       0xBE1  /* External IRQ enable bits [51:32] */
+#define CSR_MEIP0       0xFE0  /* External IRQ pending bits [31:0] (read-only) */
+#define CSR_MEIP1       0xFE1  /* External IRQ pending bits [51:32] (read-only) */
+#define CSR_MLEI        0xFE2  /* Lowest enabled pending IRQ number (read-only) */
+#define CSR_MEIEA       0xBE2  /* External IRQ array enable access */
+#define CSR_MEIPA       0xFE4  /* External IRQ array pending access */
+#define CSR_MEIFA       0xBE4  /* External IRQ array force */
+#define CSR_MEICONTEXT  0xBE6  /* External IRQ context save/restore */
+
+/* Hazard3 stack protection CSRs */
+#define CSR_MSTACK_BASE  0xBC0  /* Stack base (lower bound) */
+#define CSR_MSTACK_LIMIT 0xBC1  /* Stack limit (upper bound) */
 
 /* mstatus bits */
 #define MSTATUS_MIE     (1u << 3)   /* Machine interrupt enable */
@@ -115,6 +131,11 @@ typedef struct {
     uint32_t lr_reservation;    /* Reserved address (set by LR.W) */
     int lr_valid;               /* 1 if reservation is active */
 
+    /* Hazard3 stack protection */
+    uint32_t stack_base;        /* Stack lower bound (CSR_MSTACK_BASE) */
+    uint32_t stack_limit;       /* Stack upper bound (CSR_MSTACK_LIMIT) */
+    int stack_guard_enabled;    /* Whether stack bounds checking is active */
+
     /* Trap state */
     int in_trap;            /* Currently handling a trap */
 
@@ -131,6 +152,9 @@ typedef struct {
 
     /* Memory bus pointer (rv_membus_state_t*, set by init) */
     void *bus;
+
+    /* Instruction cache pointer (rv_icache_t*, optional) */
+    void *icache;
 } rv_cpu_state_t;
 
 /* ========================================================================

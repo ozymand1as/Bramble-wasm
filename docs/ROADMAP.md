@@ -1,33 +1,42 @@
 # Bramble RP2040/RP2350 Emulator - Roadmap
 
-## Current State: v0.38.0
+## Current State: v0.39.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | RP2040 CPU | 65+ Thumb-1 | Full ARMv6-M instruction set + O(1) dispatch + JIT |
-| RP2350 RV | RV32IMAC + CLINT | Hazard3: 90+ instructions, CLINT interrupt controller, 520KB SRAM bus, bootrom, dual-hart execution |
-| Memory Map | 100% | RP2040: all regions. RP2350: 520KB SRAM + 32KB ROM + CLINT + shared peripheral bus |
-| Peripherals | 100% | All 30 RP2040 peripherals + RP2350 stubs (TRNG, SHA-256, OTP, HSTX, TICKS) |
+| RP2350 RV | Complete | Hazard3: 93 RV32IMAC, Hazard3 CSRs (meie/meip/mlei), CLINT, icache, stack protection, semihosting |
+| RP2350 Peripherals | Complete | TICKS, POWMAN, QMI, OTP+data, BOOTRAM, TIMER1, PIO2, 48 GPIO, GLITCH, CORESIGHT, ACCESSCTRL |
+| Memory Map | 100% | RP2040: all regions. RP2350: 520KB SRAM + 32KB ROM + CLINT + all RP2350 peripherals + SIO with hart launch |
+| Peripherals | 100% | All 30 RP2040 peripherals + 11 RP2350-specific peripherals |
 | Storage | SD card + eMMC | SPI-attached SD (SDHC, CSD v2.0) and eMMC with file-backed images |
-| Exceptions | 100% | ARM: tail-chaining, late-arriving, PRIMASK + FAULTMASK. RISC-V: mtvec, MRET, CLINT interrupts |
+| Exceptions | 100% | ARM: tail-chaining, late-arriving, PRIMASK + FAULTMASK. RISC-V: mtvec, MRET, CLINT, Hazard3 ext IRQ |
 | Boot | 100% | RP2040: vector table, boot2, ROM functions. RP2350: RISC-V bootrom (SP init, flash entry) |
 | Firmware | MicroPython + CircuitPython + littleOS | RP2040 firmware + RP2350 RV32 UF2/ELF auto-detection |
 | Networking | UART-to-TCP | Bridge UART to TCP server/client for remote serial access |
 | Multi-Device | Wire protocol | Unix socket IPC for UART/GPIO between Bramble instances |
 | Threading | Host-threaded | pthread-per-core, WFI sleep, dynamic core allocation, multi-instance pool |
 | Privilege | Auto-sudo | `-tap` and `-mount` auto-escalate via sudo when needed |
-| Dev Tools | 18 tools | Semihosting, coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus log, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |
+| Dev Tools | 18 tools | Semihosting (ARM+RV), coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus log, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |
 | Validation | 276 tests | Loader hardening, core pool, wire transport, watchdog reset, console routing, memory-map aliases, exception-path, and multicore reboot coverage |
 
-### Recent Changes (v0.38.0)
+### Recent Changes (v0.39.0)
 
-- **CLINT interrupt controller**: Machine timer (mtime/mtimecmp), software interrupts (MSIP), external interrupt aggregation. Memory-mapped at 0xD0000100.
-- **RP2350 memory bus**: 520KB SRAM, 32KB ROM, CLINT routing, fall-through to shared peripheral bus for UART/SPI/I2C/GPIO/etc.
-- **RISC-V bootrom**: Generated code in 32KB ROM — sets SP, jumps to flash. Trap handler loops on unhandled traps.
-- **Dual-hart execution**: Cooperative step loop, WFI support, CLINT interrupt delivery per-hart.
-- **UF2 family ID auto-detect**: RP2040 (0xE48BFF56), RP2350-ARM (0xE48BFF59), RP2350-RV (0xE48BFF5A).
-- **ELF RISC-V support**: Accepts EM_RISCV (243) in addition to EM_ARM (40).
-- **Architecture auto-detection**: `-arch` auto-set from firmware when not explicitly specified.
+- **Hazard3 custom CSRs**: meie0/meie1 (ext IRQ enable), meip0/meip1 (ext IRQ pending), mlei (lowest pending), meiea/meipa/meifa/meicontext, mstack_base/mstack_limit.
+- **RP2350 peripheral module**: TICKS (9 generators), POWMAN (VREG/BOD/AON timer), QMI (flash interface), OTP (8192-row data), BOOTRAM (256B), TIMER1, TIMER0 address redirect, GLITCH, CORESIGHT, ACCESSCTRL.
+- **PIO2**: Third PIO block at 0x50400000, PIO_NUM_BLOCKS=3.
+- **48-pin GPIO**: NUM_GPIO_PINS expanded to 48, interrupt register arrays to 6.
+- **RP2350 SIO**: CPUID=RP2350, GPIO_HI for pins 32-47, hart 1 launch mailbox (entry/SP/arg at 0xD00001C0).
+- **Hart 1 launch protocol**: SIO mailbox write triggers hart 1 reset with specified entry/SP/a0.
+- **RV instruction cache**: 64K-entry decoded cache for flash/ROM fetches, 100% hit rate on tight loops.
+- **RV semihosting**: EBREAK with a0=0x20026 triggers SYS_EXIT.
+- **Hardware stack protection**: mstack_base/mstack_limit CSRs.
+
+### Previous (v0.38.0)
+
+- **CLINT interrupt controller**: Machine timer (mtime/mtimecmp), software interrupts (MSIP), external interrupt aggregation.
+- **RP2350 memory bus**: 520KB SRAM, 32KB ROM, CLINT routing, peripheral fallthrough.
+- **RISC-V bootrom**: SP init + flash jump. UF2/ELF auto-detection.
 
 ### Previous (v0.37.0)
 

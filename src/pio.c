@@ -587,6 +587,8 @@ int pio_match(uint32_t addr) {
         return 0;
     if (base >= PIO1_BASE && base < PIO1_BASE + PIO_BLOCK_SIZE)
         return 1;
+    if (base >= PIO2_BASE && base < PIO2_BASE + PIO_BLOCK_SIZE)
+        return 2;  /* PIO2: RP2350 only */
     return -1;
 }
 

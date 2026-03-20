@@ -17,6 +17,7 @@
 #include <string.h>
 #include "rp2350_rv/rv_cpu.h"
 #include "rp2350_rv/rv_membus.h"
+#include "rp2350_rv/rv_icache.h"
 #include "emulator.h"
 
 /* ========================================================================
@@ -134,6 +135,41 @@ uint32_t rv_csr_read(rv_cpu_state_t *cpu, uint16_t addr) {
     case CSR_MINSTRET:  return (uint32_t)cpu->instret_count;
     case CSR_MINSTRETH: return (uint32_t)(cpu->instret_count >> 32);
     case CSR_MHARTID:   return (uint32_t)cpu->hart_id;
+
+    /* Hazard3 external interrupt CSRs (read from CLINT state via bus) */
+    case CSR_MEIP0: {   /* Pending IRQs [31:0] — read-only, computed from hardware */
+        if (cpu->bus) {
+            rv_membus_state_t *bus = (rv_membus_state_t *)cpu->bus;
+            return (uint32_t)(bus->clint.ext_pending & cpu->csr[CSR_MEIE0]);
+        }
+        return 0;
+    }
+    case CSR_MEIP1: {   /* Pending IRQs [51:32] — read-only */
+        if (cpu->bus) {
+            rv_membus_state_t *bus = (rv_membus_state_t *)cpu->bus;
+            return (uint32_t)((bus->clint.ext_pending >> 32) & cpu->csr[CSR_MEIE1]);
+        }
+        return 0;
+    }
+    case CSR_MLEI: {    /* Lowest enabled pending IRQ number — read-only */
+        if (cpu->bus) {
+            rv_membus_state_t *bus = (rv_membus_state_t *)cpu->bus;
+            uint64_t enabled_pending = bus->clint.ext_pending &
+                ((uint64_t)cpu->csr[CSR_MEIE1] << 32 | cpu->csr[CSR_MEIE0]);
+            if (enabled_pending == 0) return 0xFFFFFFFF;  /* No pending */
+            /* Find lowest set bit */
+            for (uint32_t i = 0; i < 52; i++) {
+                if (enabled_pending & (1ULL << i)) return i;
+            }
+            return 0xFFFFFFFF;
+        }
+        return 0xFFFFFFFF;
+    }
+
+    /* Stack protection */
+    case CSR_MSTACK_BASE:  return cpu->stack_base;
+    case CSR_MSTACK_LIMIT: return cpu->stack_limit;
+
     default:
         if (addr < RV_CSR_COUNT)
             return cpu->csr[addr];
@@ -152,6 +188,42 @@ void rv_csr_write(rv_cpu_state_t *cpu, uint16_t addr, uint32_t val) {
     case CSR_MVENDORID: break;  /* Read-only */
     case CSR_MARCHID:   break;  /* Read-only */
     case CSR_MIMPID:    break;  /* Read-only */
+
+    /* Hazard3 external interrupt enable */
+    case CSR_MEIE0:
+        cpu->csr[CSR_MEIE0] = val;
+        /* Update CLINT ext_enable for this hart */
+        if (cpu->bus) {
+            rv_membus_state_t *bus = (rv_membus_state_t *)cpu->bus;
+            int h = cpu->hart_id < 2 ? cpu->hart_id : 0;
+            bus->clint.ext_enable[h] = (bus->clint.ext_enable[h] & 0xFFFFFFFF00000000ULL) | val;
+        }
+        break;
+    case CSR_MEIE1:
+        cpu->csr[CSR_MEIE1] = val & 0x000FFFFF;  /* Only 20 bits for IRQs 32-51 */
+        if (cpu->bus) {
+            rv_membus_state_t *bus = (rv_membus_state_t *)cpu->bus;
+            int h = cpu->hart_id < 2 ? cpu->hart_id : 0;
+            bus->clint.ext_enable[h] = (bus->clint.ext_enable[h] & 0xFFFFFFFF) |
+                                       ((uint64_t)(val & 0x000FFFFF) << 32);
+        }
+        break;
+
+    /* Read-only Hazard3 CSRs */
+    case CSR_MEIP0: break;
+    case CSR_MEIP1: break;
+    case CSR_MLEI:  break;
+
+    /* Stack protection */
+    case CSR_MSTACK_BASE:
+        cpu->stack_base = val;
+        cpu->stack_guard_enabled = (cpu->stack_base != 0 || cpu->stack_limit != 0);
+        break;
+    case CSR_MSTACK_LIMIT:
+        cpu->stack_limit = val;
+        cpu->stack_guard_enabled = (cpu->stack_base != 0 || cpu->stack_limit != 0);
+        break;
+
     default:
         if (addr < RV_CSR_COUNT)
             cpu->csr[addr] = val;
@@ -235,11 +307,37 @@ int rv_cpu_step(rv_cpu_state_t *cpu) {
 
     uint32_t pc = cpu->pc;
 
-    /* Fetch instruction (supports both 32-bit and 16-bit compressed) */
+    /* Fetch instruction — try icache first for flash/ROM addresses */
     uint32_t instr;
-    uint16_t lo = rv_read16(cpu, pc);
+    uint16_t lo;
+    int is_compressed;
 
-    int is_compressed = ((lo & 3) != 3);
+    /* Instruction cache: check for flash (0x10xxxxxx) and ROM (< 0x8000) */
+    rv_icache_t *icache = (rv_icache_t *)cpu->icache;
+    if (icache && (pc < 0x8000 || (pc >= 0x10000000 && pc < 0x10000000 + 0x1000000))) {
+        uint8_t isize;
+        if (rv_icache_lookup(icache, pc, &instr, &isize)) {
+            lo = (uint16_t)instr;
+            is_compressed = (isize == 2);
+            goto decode;
+        }
+    }
+
+    lo = rv_read16(cpu, pc);
+    is_compressed = ((lo & 3) != 3);
+
+    /* Insert into icache if in flash/ROM */
+    if (icache && (pc < 0x8000 || (pc >= 0x10000000 && pc < 0x10000000 + 0x1000000))) {
+        if (is_compressed) {
+            rv_icache_insert(icache, pc, lo, 2);
+        } else {
+            uint16_t hi = rv_read16(cpu, pc + 2);
+            uint32_t full = (uint32_t)lo | ((uint32_t)hi << 16);
+            rv_icache_insert(icache, pc, full, 4);
+        }
+    }
+
+decode:
     if (is_compressed) {
         /* ============================================================
          * RV32C Compressed Instructions (16-bit)

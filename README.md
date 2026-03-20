@@ -2,21 +2,22 @@
 
 A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, supporting both ARM Cortex-M0+ (Thumb) and RISC-V Hazard3 (RV32IMAC) cores. Loads and executes UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.38.0
+## Current Status: v0.39.0
 
-276 tests passing (zero warnings). **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Fully wired — RV32IMAC ISA + CLINT interrupt controller + 520KB SRAM memory bus + bootrom + dual-hart execution + UF2/ELF auto-detection. **RP2350 ARM**: Placeholder (Cortex-M33 not yet implemented).
+276 tests passing (zero warnings). **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Complete Hazard3 emulation — RV32IMAC ISA + Hazard3 custom CSRs + CLINT + 520KB SRAM + 32KB ROM + bootrom + dual-hart + all RP2350 peripherals (TICKS, POWMAN, QMI, OTP, BOOTRAM, TIMER1, PIO2, 48 GPIO, GLITCH, CORESIGHT, ACCESSCTRL) + instruction cache + semihosting + stack protection. **RP2350 ARM**: Placeholder (Cortex-M33 not yet implemented).
 
 ### Coverage
 
 | Area | Status | Details |
 |------|--------|---------|
 | RP2040 CPU | 65+ instructions | Full Thumb-1 + BL/MSR/MRS/DSB/DMB/ISB, O(1) dispatch, NZCV flags |
-| RP2350 RV | RV32IMAC + CLINT | Hazard3: 90+ instructions, CSRs, traps, LR/SC, CLINT timer/SW/ext IRQs, dual-hart, 520KB SRAM, bootrom |
-| Dual-Core | Complete | RP2040: host-threaded, WFI, FIFO, spinlocks, auto-launch. RP2350: cooperative dual-hart with CLINT |
-| Memory Map | 100% | RP2040: Flash + XIP + SRAM + ROM (16KB) + all peripherals. RP2350: 520KB SRAM + 32KB ROM + CLINT + shared peripherals |
+| RP2350 RV | Complete | Hazard3: 93 RV32IMAC instructions, Hazard3 CSRs (meie/meip/mlei), CLINT, 520KB SRAM, 32KB ROM, bootrom, icache, stack protection |
+| RP2350 Peripherals | Complete | TICKS, POWMAN, QMI, OTP+data, BOOTRAM, TIMER1, PIO2, GLITCH, CORESIGHT, ACCESSCTRL, 48 GPIO, SIO with hart launch |
+| Dual-Core | Complete | RP2040: host-threaded, WFI, FIFO, spinlocks, auto-launch. RP2350: cooperative dual-hart with CLINT + SIO mailbox launch |
+| Memory Map | 100% | RP2040: Flash + XIP + SRAM + ROM (16KB) + all peripherals. RP2350: 520KB SRAM + 32KB ROM + CLINT + all RP2350 peripherals |
 | Boot | Complete | RP2040: vector table, boot2, ROM functions. RP2350: RISC-V bootrom (SP init, flash jump) |
-| Exceptions | 100% | ARM: tail-chaining, late-arriving, PRIMASK + FAULTMASK. RISC-V: mtvec direct/vectored, MRET, MIE/MPIE |
-| Timing | Cycle-accurate | Configurable clock (`-clock 125`), ARMv6-M instruction costs, CLINT mtime |
+| Exceptions | 100% | ARM: tail-chaining, late-arriving, PRIMASK + FAULTMASK. RISC-V: mtvec direct/vectored, MRET, MIE/MPIE, Hazard3 ext IRQ routing |
+| Timing | Cycle-accurate | Configurable clock (`-clock 125`/`-clock 150`), ARMv6-M instruction costs, CLINT mtime, TIMER1 |
 | Debugging | GDB RSP | Breakpoints, watchpoints, conditional breakpoints, dual-core threads (`-gdb`) |
 | Flash | Write-through + FUSE | `-flash <path>` with sync; `-mount <dir>` for live host access (thread-safe) |
 | Storage | SD card + eMMC | SPI-attached file-backed block devices |
@@ -25,6 +26,8 @@ A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, sup
 | Privilege | Auto-sudo | `-tap` and `-mount` auto-escalate via sudo when needed |
 | Dev Tools | 18 tools | Semihosting, coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus logging, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |
 | Firmware Auto-Detect | UF2 + ELF | Auto-detects RP2040/RP2350-ARM/RP2350-RV from UF2 family ID or ELF machine type |
+| RV Performance | ICache | 64K-entry decoded instruction cache for flash/ROM fetches |
+| RV Semihosting | EBREAK | EBREAK with a0=0x20026 triggers SYS_EXIT |
 | Tests | 276 | CTest integrated, 50+ categories |
 
 ### Peripherals

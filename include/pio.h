@@ -24,8 +24,9 @@
 
 #define PIO0_BASE           0x50200000
 #define PIO1_BASE           0x50300000
+#define PIO2_BASE           0x50400000  /* RP2350 only */
 #define PIO_BLOCK_SIZE      0x1000
-#define PIO_NUM_BLOCKS      2
+#define PIO_NUM_BLOCKS      3  /* PIO0, PIO1, PIO2 (PIO2 is RP2350 only) */
 #define PIO_NUM_SM           4
 #define PIO_INSTR_MEM_SIZE  32
 

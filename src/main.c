@@ -26,6 +26,8 @@
 #include "rp2350_rv/rv_clint.h"
 #include "rp2350_rv/rv_membus.h"
 #include "rp2350_rv/rv_bootrom.h"
+#include "rp2350_rv/rv_icache.h"
+#include "rp2350_rv/rp2350_periph.h"
 #include "rp2350_rv/rp2350_memmap.h"
 
 /* Architecture selection */
@@ -1035,13 +1037,19 @@ skip_fuse:
         rv_bootrom_init(rv_bus.rom, rv_bus.rom_size,
                         RP2350_FLASH_BASE, RP2350_SRAM_END);
 
+        /* RV instruction cache */
+        static rv_icache_t rv_icache;
+        rv_icache_init(&rv_icache);
+
         /* Initialize both harts */
         rv_cpu_init(&rv_cores[0], 0);
         rv_cpu_init(&rv_cores[1], 1);
 
-        /* Attach memory bus to both harts */
+        /* Attach memory bus and icache to both harts */
         rv_cores[0].bus = &rv_bus;
         rv_cores[1].bus = &rv_bus;
+        rv_cores[0].icache = &rv_icache;
+        rv_cores[1].icache = &rv_icache;
 
         /* Boot hart 0 from ROM (bootrom sets SP and jumps to flash) */
         rv_cpu_reset(&rv_cores[0], 0x00000000);
@@ -1063,13 +1071,37 @@ skip_fuse:
 
             step_count++;
 
-            /* Advance CLINT timer */
+            /* Advance CLINT timer and RP2350 TIMER1 */
             rv_clint_tick(&rv_bus.clint, 1);
+            if (rv_bus.clint.cycle_accum == 0) {
+                /* A microsecond elapsed — tick TIMER1 */
+                rp2350_timer1_tick(&rv_bus.periph, 1);
+            }
 
             /* Check and deliver interrupts to both harts */
             rv_clint_check_interrupts(&rv_bus.clint, &rv_cores[0]);
             if (!rv_cores[1].is_halted)
                 rv_clint_check_interrupts(&rv_bus.clint, &rv_cores[1]);
+
+            /* Check hart 1 launch mailbox */
+            if (rv_cores[1].is_halted) {
+                uint32_t h1_entry, h1_sp, h1_arg;
+                if (rv_membus_check_hart1_launch(&rv_bus, &h1_entry, &h1_sp, &h1_arg)) {
+                    rv_cpu_reset(&rv_cores[1], h1_entry);
+                    rv_cores[1].x[2] = h1_sp;   /* SP */
+                    rv_cores[1].x[10] = h1_arg;  /* a0 */
+                    fprintf(stderr, "[RV] Hart 1 launched: PC=0x%08X SP=0x%08X a0=0x%08X\n",
+                            h1_entry, h1_sp, h1_arg);
+                }
+            }
+
+            /* RISC-V semihosting check (EBREAK with a0=0x20026) */
+            if (rv_cores[0].csr[CSR_MCAUSE] == MCAUSE_BREAKPOINT) {
+                if (rv_cores[0].x[10] == 0x20026) {
+                    /* SYS_EXIT: exit emulator */
+                    semihost_exit_requested = 1;
+                }
+            }
 
             /* Poll stdin and peripherals periodically */
             if (stdin_enabled && (step_count & 0x3FF) == 0)
@@ -1099,6 +1131,10 @@ skip_fuse:
                     (unsigned long)rv_cores[1].cycle_count);
         fprintf(stderr, "[RV] CLINT mtime: %lu\n",
                 (unsigned long)rv_bus.clint.mtime);
+        if (rv_icache.hits + rv_icache.misses > 0)
+            fprintf(stderr, "[RV] ICache: %lu hits, %lu misses (%.1f%% hit rate)\n",
+                    (unsigned long)rv_icache.hits, (unsigned long)rv_icache.misses,
+                    100.0 * rv_icache.hits / (rv_icache.hits + rv_icache.misses));
 
     } else if (threaded_mode && !gdb_enabled) {
         /* ====== Threaded execution: one host pthread per emulated core ====== */

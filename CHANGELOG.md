@@ -1,5 +1,49 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.39.0] - 2026-03-20
+
+### Added - Complete RP2350 Hazard3 Emulation (All 3 Tiers)
+
+- **Hazard3 custom CSRs**: meie0/meie1 (external IRQ enable), meip0/meip1 (external IRQ pending, read-only), mlei (lowest enabled pending IRQ), meiea/meipa/meifa/meicontext (IRQ array access). CSR writes update CLINT ext_enable in real-time.
+- **Hardware stack protection**: mstack_base/mstack_limit CSRs for SP bounds checking (Hazard3 extension).
+- **RP2350 peripheral module** (`rp2350_periph.c`): Unified implementation of 9 new RP2350 peripherals:
+  - TICKS (0x40108000): 9 tick generators (proc0/1, timer0/1, watchdog, RISC-V, ref, ADC) with CTRL + CYCLES registers.
+  - POWMAN (0x40100000): Power manager with VREG/BOD control, AON timer, power domain state.
+  - QMI (0x400D0000): QSPI Memory Interface with direct-mode CSR, M0/M1 timing/format/command, address translation.
+  - OTP (0x40120000/0x40130000): 8192-row OTP memory with controller registers and data readout (16-bit per row).
+  - BOOTRAM (0x400E0000): 256-byte boot scratch RAM with byte/word access.
+  - TIMER1 (0x400B8000): Second hardware timer (same register layout as RP2040 timer, with alarm checking).
+  - TIMER0 (0x400B0000): RP2350 timer address redirect to RP2040 timer at 0x40054000.
+  - GLITCH (0x40158000): Glitch detector register storage.
+  - CORESIGHT (0x40140000): CoreSight trace register storage.
+  - ACCESSCTRL (0x40160000): Peripheral access control (default all-access).
+- **PIO2**: Third PIO block at 0x50400000 — `PIO_NUM_BLOCKS` increased to 3, `pio_match()` updated.
+- **48-pin GPIO**: `NUM_GPIO_PINS` expanded from 30 to 48, interrupt register arrays expanded to 6 (from 4).
+- **RP2350 SIO**: CPUID returns RP2350 identifier, GPIO_HI registers for pins 32-47 (out/oe/in), hart 1 launch mailbox.
+- **Hart 1 launch protocol**: SIO mailbox at 0xD00001C0 — hart 0 writes entry/SP/arg, then triggers launch. Main loop detects pending launch and resets hart 1 with specified registers.
+- **RISC-V instruction cache**: 64K-entry direct-mapped cache for flash/ROM instruction fetches. Avoids repeated memory bus reads. Reports hit/miss stats on exit.
+- **RISC-V semihosting**: EBREAK with a0=0x20026 triggers SYS_EXIT (emulator shutdown).
+
+### Files Added
+
+- `include/rp2350_rv/rp2350_periph.h` — RP2350 peripheral state structures and API
+- `src/rp2350_rv/rp2350_periph.c` — TICKS, POWMAN, QMI, OTP, BOOTRAM, TIMER1, GLITCH, CORESIGHT, ACCESSCTRL
+- `include/rp2350_rv/rv_icache.h` — RISC-V instruction cache (header-only, inline functions)
+
+### Changed
+
+- `rv_cpu.h`: Added Hazard3 CSR defines (meie0/1, meip0/1, mlei, mstack_base/limit), stack protection fields, icache pointer.
+- `rv_cpu.c`: CSR read/write handles Hazard3-specific CSRs, instruction fetch uses icache for flash/ROM.
+- `rv_membus.h/c`: Added rp2350_periph_state_t, hart launch mailbox, GPIO_HI registers, RP2350 SIO handler.
+- `pio.h/c`: PIO_NUM_BLOCKS=3, PIO2_BASE=0x50400000, pio_match() updated.
+- `gpio.h`: NUM_GPIO_PINS=48, interrupt register arrays expanded to 6.
+
+### Tests
+
+- 276 tests passing, zero warnings.
+
+---
+
 ## [0.38.0] - 2026-03-20
 
 ### Added - RP2350 RISC-V Full Integration (CLINT, Memory Bus, Bootrom, Firmware Auto-Detect)
