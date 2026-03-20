@@ -95,6 +95,59 @@ static void uart_stdin_poll(void) {
     }
 }
 
+static void attach_spi_devices(sdcard_t *sdcard, const char *sdcard_path, int sdcard_spi,
+                               emmc_t *emmc_dev, const char *emmc_path, int emmc_spi) {
+    if (sdcard_path) {
+        spi_attach_device(sdcard_spi, sdcard_spi_xfer, sdcard_spi_cs, sdcard);
+    }
+    if (emmc_path) {
+        spi_attach_device(emmc_spi, emmc_spi_xfer, emmc_spi_cs, emmc_dev);
+    }
+}
+
+static void reset_runtime_peripherals(const char *tap_name) {
+    gpio_init();
+    timer_init();
+    nvic_init();
+    rom_init();
+    uart_init();
+    spi_init();
+    i2c_init();
+    pwm_init();
+    dma_init();
+    pio_init();
+    clocks_init();
+    adc_init();
+    usb_init();
+    rtc_init();
+
+    if (cyw43.enabled) {
+        cyw43_init();
+        fprintf(stderr, "[WiFi] CYW43439 emulation enabled\n");
+        if (tap_name && cyw43.tap_fd < 0) {
+            if (cyw43_tap_open(tap_name) < 0) {
+                fprintf(stderr, "[WiFi] Failed to open TAP interface '%s'\n", tap_name);
+            }
+        }
+    }
+}
+
+static void reboot_from_watchdog(const char *tap_name,
+                                 sdcard_t *sdcard, const char *sdcard_path, int sdcard_spi,
+                                 emmc_t *emmc_dev, const char *emmc_path, int emmc_spi) {
+    fprintf(stderr, "[Watchdog] Reboot triggered\n");
+    watchdog_reboot_pending = 0;
+    clocks_state.wdog_ctrl &= ~(1u << 31);
+
+    reset_runtime_peripherals(tap_name);
+    attach_spi_devices(sdcard, sdcard_path, sdcard_spi, emmc_dev, emmc_path, emmc_spi);
+    dual_core_init();
+    cpu_reset_core(CORE0);
+    if (num_active_cores > 1) {
+        cpu_reset_core(CORE1);
+    }
+}
+
 /* ============================================================================
  * Main Entry Point
  * ============================================================================ */
@@ -323,28 +376,7 @@ int main(int argc, char **argv) {
 
     /* Initialize CPU and peripherals */
     cpu_init();
-    rom_init();
-    uart_init();
-    spi_init();
-    i2c_init();
-    pwm_init();
-    dma_init();
-    pio_init();
-    clocks_init();
-    adc_init();
-    usb_init();
-    rtc_init();
-
-    /* Initialize CYW43 WiFi emulation if enabled */
-    if (cyw43.enabled) {
-        cyw43_init();
-        fprintf(stderr, "[WiFi] CYW43439 emulation enabled\n");
-        if (tap_name) {
-            if (cyw43_tap_open(tap_name) < 0) {
-                fprintf(stderr, "[WiFi] Failed to open TAP interface '%s'\n", tap_name);
-            }
-        }
-    }
+    reset_runtime_peripherals(tap_name);
 
     int loaded = 0;
     size_t path_len = strlen(firmware_path);
@@ -465,7 +497,6 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[Error] Failed to initialize SD card\n");
             return EXIT_FAILURE;
         }
-        spi_attach_device(sdcard_spi, sdcard_spi_xfer, sdcard_spi_cs, &sdcard);
         fprintf(stderr, "[Init] SD card (%zu MB) on SPI%d: %s\n",
                 sdcard_size / (1024 * 1024), sdcard_spi, sdcard_path);
     }
@@ -476,10 +507,11 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[Error] Failed to initialize eMMC\n");
             return EXIT_FAILURE;
         }
-        spi_attach_device(emmc_spi, emmc_spi_xfer, emmc_spi_cs, &emmc_dev);
         fprintf(stderr, "[Init] eMMC (%zu MB) on SPI%d: %s\n",
                 emmc_size / (1024 * 1024), emmc_spi, emmc_path);
     }
+
+    attach_spi_devices(&sdcard, sdcard_path, sdcard_spi, &emmc_dev, emmc_path, emmc_spi);
 
     fprintf(stderr,"[Boot] Starting Core 0 from flash...\n");
     cpu_reset_core(CORE0);
@@ -553,16 +585,8 @@ int main(int argc, char **argv) {
             /* Watchdog reboot */
             if (watchdog_reboot_pending) {
                 corepool_stop_threads();
-                fprintf(stderr,"[Watchdog] Reboot triggered\n");
-                watchdog_reboot_pending = 0;
-                clocks_state.wdog_ctrl &= ~(1u << 31);
-                dual_core_init();
-                nvic_init();
-                timer_init();
-                rom_init();
-                if (no_boot2 || !cpu_has_boot2()) {
-                    cpu_reset_core(CORE0);
-                }
+                reboot_from_watchdog(tap_name, &sdcard, sdcard_path, sdcard_spi,
+                                     &emmc_dev, emmc_path, emmc_spi);
                 corepool_start_threads();
             }
 
@@ -658,16 +682,8 @@ int main(int argc, char **argv) {
 
             /* Watchdog reboot: reset all cores and re-start from flash */
             if (watchdog_reboot_pending) {
-                fprintf(stderr,"[Watchdog] Reboot triggered\n");
-                watchdog_reboot_pending = 0;
-                clocks_state.wdog_ctrl &= ~(1u << 31);  /* Clear trigger bit */
-                dual_core_init();
-                nvic_init();
-                timer_init();
-                rom_init();
-                if (no_boot2 || !cpu_has_boot2()) {
-                    cpu_reset_core(CORE0);
-                }
+                reboot_from_watchdog(tap_name, &sdcard, sdcard_path, sdcard_spi,
+                                     &emmc_dev, emmc_path, emmc_spi);
                 instruction_count = 0;
                 step_count = 0;
                 continue;

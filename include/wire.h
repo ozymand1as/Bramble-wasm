@@ -1,6 +1,7 @@
 #ifndef WIRE_H
 #define WIRE_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 /* ========================================================================
@@ -24,6 +25,8 @@
  * ======================================================================== */
 
 #define WIRE_MAX_LINKS  4
+#define WIRE_MAX_PAYLOAD 8
+#define WIRE_IO_BUFFER_SIZE 256
 
 /* Wire message types */
 #define WIRE_MSG_UART_DATA  0x01  /* UART byte: payload = 1 byte */
@@ -52,6 +55,10 @@ typedef struct {
     char path[256];     /* Socket path */
     uint8_t type;       /* What peripheral this wire connects (WIRE_MSG_*) */
     uint8_t channel;    /* Peripheral instance number */
+    uint8_t rx_buf[WIRE_IO_BUFFER_SIZE];
+    size_t rx_len;
+    uint8_t tx_buf[WIRE_IO_BUFFER_SIZE];
+    size_t tx_len;
 } wire_link_t;
 
 typedef struct {

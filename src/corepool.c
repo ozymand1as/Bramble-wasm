@@ -70,13 +70,40 @@ static int is_pid_alive(pid_t pid) {
     return kill(pid, 0) == 0 || errno == EPERM;
 }
 
-static int registry_read(corepool_entry_t *entries, int max_entries) {
-    FILE *f = fopen(COREPOOL_REGISTRY_PATH, "r");
-    if (!f) return 0;
+static const char *corepool_registry_path(void) {
+    const char *path = getenv(COREPOOL_REGISTRY_ENV);
+    if (path && path[0]) {
+        return path;
+    }
+    return COREPOOL_REGISTRY_PATH;
+}
+
+static FILE *registry_open_locked(int lock_type, int *fd_out) {
+    FILE *f = fopen(corepool_registry_path(), "r+");
+    if (!f) {
+        f = fopen(corepool_registry_path(), "w+");
+    }
+    if (!f) {
+        return NULL;
+    }
 
     int fd = fileno(f);
-    flock(fd, LOCK_SH);
+    if (flock(fd, lock_type) < 0) {
+        fclose(f);
+        return NULL;
+    }
 
+    *fd_out = fd;
+    return f;
+}
+
+static void registry_close_locked(FILE *f, int fd) {
+    flock(fd, LOCK_UN);
+    fclose(f);
+}
+
+static int registry_read_file(FILE *f, corepool_entry_t *entries, int max_entries) {
+    rewind(f);
     int count = 0;
     while (count < max_entries) {
         int pid, cores, active;
@@ -88,18 +115,19 @@ static int registry_read(corepool_entry_t *entries, int max_entries) {
             count++;
         }
     }
-
-    flock(fd, LOCK_UN);
-    fclose(f);
+    clearerr(f);
     return count;
 }
 
-static void registry_write(corepool_entry_t *entries, int count) {
-    FILE *f = fopen(COREPOOL_REGISTRY_PATH, "w");
-    if (!f) return;
-
-    int fd = fileno(f);
-    flock(fd, LOCK_EX);
+static void registry_write_file(FILE *f, int fd,
+                                corepool_entry_t *entries, int count) {
+    if (fflush(f) != 0) {
+        return;
+    }
+    if (ftruncate(fd, 0) != 0) {
+        return;
+    }
+    rewind(f);
 
     for (int i = 0; i < count; i++) {
         if (entries[i].active) {
@@ -107,14 +135,20 @@ static void registry_write(corepool_entry_t *entries, int count) {
                     entries[i].num_cores, entries[i].active);
         }
     }
-
-    flock(fd, LOCK_UN);
-    fclose(f);
+    fflush(f);
+    fsync(fd);
 }
 
 void corepool_register(int cores) {
+    int fd;
+    FILE *f = registry_open_locked(LOCK_EX, &fd);
+    if (!f) {
+        fprintf(stderr, "[CorePool] Failed to open registry: %s\n", strerror(errno));
+        return;
+    }
+
     corepool_entry_t entries[COREPOOL_MAX_INSTANCES];
-    int count = registry_read(entries, COREPOOL_MAX_INSTANCES);
+    int count = registry_read_file(f, entries, COREPOOL_MAX_INSTANCES);
 
     /* Remove any existing entry for this PID */
     pid_t my_pid = getpid();
@@ -134,7 +168,8 @@ void corepool_register(int cores) {
         count++;
     }
 
-    registry_write(entries, count);
+    registry_write_file(f, fd, entries, count);
+    registry_close_locked(f, fd);
     corepool.registered = 1;
 
     fprintf(stderr, "[CorePool] Registered PID %d with %d core(s) (host: %d CPUs)\n",
@@ -144,8 +179,16 @@ void corepool_register(int cores) {
 void corepool_unregister(void) {
     if (!corepool.registered) return;
 
+    int fd;
+    FILE *f = registry_open_locked(LOCK_EX, &fd);
+    if (!f) {
+        fprintf(stderr, "[CorePool] Failed to open registry: %s\n", strerror(errno));
+        corepool.registered = 0;
+        return;
+    }
+
     corepool_entry_t entries[COREPOOL_MAX_INSTANCES];
-    int count = registry_read(entries, COREPOOL_MAX_INSTANCES);
+    int count = registry_read_file(f, entries, COREPOOL_MAX_INSTANCES);
 
     pid_t my_pid = getpid();
     for (int i = 0; i < count; i++) {
@@ -156,13 +199,22 @@ void corepool_unregister(void) {
         }
     }
 
-    registry_write(entries, count);
+    registry_write_file(f, fd, entries, count);
+    registry_close_locked(f, fd);
     corepool.registered = 0;
 }
 
 int corepool_query_cores(void) {
+    int fd;
+    FILE *f = registry_open_locked(LOCK_EX, &fd);
+    if (!f) {
+        return 1;
+    }
+
     corepool_entry_t entries[COREPOOL_MAX_INSTANCES];
-    int count = registry_read(entries, COREPOOL_MAX_INSTANCES);
+    int count = registry_read_file(f, entries, COREPOOL_MAX_INSTANCES);
+    registry_write_file(f, fd, entries, count);
+    registry_close_locked(f, fd);
 
     /* Sum cores already allocated across all active instances */
     int total_allocated = 0;
@@ -309,6 +361,9 @@ void corepool_unlock(void) {
 }
 
 void corepool_cleanup(void) {
+    if (corepool.running) {
+        corepool_stop_threads();
+    }
     corepool_unregister();
     pthread_mutex_destroy(&corepool.emu_lock);
     pthread_cond_destroy(&corepool.wfi_cond);

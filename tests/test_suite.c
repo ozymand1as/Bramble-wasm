@@ -14,6 +14,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/socket.h>
 #include "emulator.h"
 #include "instructions.h"
 #include "nvic.h"
@@ -34,6 +37,7 @@
 #include "emmc.h"
 #include "storage.h"
 #include "corepool.h"
+#include "wire.h"
 
 /* ========================================================================
  * Test Framework (Verbose)
@@ -122,6 +126,58 @@ static void reset_cpu(void) {
     pwm_init();
     dma_init();
     pio_init();
+}
+
+static void write_le16(uint8_t *buf, size_t offset, uint16_t val) {
+    buf[offset + 0] = (uint8_t)(val & 0xFF);
+    buf[offset + 1] = (uint8_t)((val >> 8) & 0xFF);
+}
+
+static void write_le32(uint8_t *buf, size_t offset, uint32_t val) {
+    buf[offset + 0] = (uint8_t)(val & 0xFF);
+    buf[offset + 1] = (uint8_t)((val >> 8) & 0xFF);
+    buf[offset + 2] = (uint8_t)((val >> 16) & 0xFF);
+    buf[offset + 3] = (uint8_t)((val >> 24) & 0xFF);
+}
+
+static void init_minimal_test_elf(uint8_t *elf_data, size_t size) {
+    memset(elf_data, 0, size);
+    elf_data[0] = 0x7F;
+    elf_data[1] = 'E';
+    elf_data[2] = 'L';
+    elf_data[3] = 'F';
+    elf_data[4] = 1;
+    elf_data[5] = 1;
+    elf_data[6] = 1;
+    write_le16(elf_data, 16, 2);
+    write_le16(elf_data, 18, 40);
+    write_le32(elf_data, 20, 1);
+    write_le32(elf_data, 24, 0x10000101);
+    write_le32(elf_data, 28, 52);
+    write_le16(elf_data, 40, 52);
+    write_le16(elf_data, 42, 32);
+    write_le16(elf_data, 44, 1);
+    write_le32(elf_data, 52, 1);
+}
+
+static const char *corepool_test_registry_path(void) {
+    static char path[128];
+    snprintf(path, sizeof(path), "/tmp/bramble-corepool-test-%d.reg", (int)getpid());
+    return path;
+}
+
+static void use_corepool_test_registry(void) {
+    const char *path = corepool_test_registry_path();
+    unlink(path);
+    setenv(COREPOOL_REGISTRY_ENV, path, 1);
+}
+
+static void cleanup_corepool_test_registry(void) {
+    const char *path = getenv(COREPOOL_REGISTRY_ENV);
+    if (path && path[0]) {
+        unlink(path);
+    }
+    unsetenv(COREPOOL_REGISTRY_ENV);
 }
 
 /* ========================================================================
@@ -434,6 +490,76 @@ TEST(test_elf_loader_wrong_arch) {
     fclose(f);
     int result = load_elf("/tmp/test_x86.elf");
     ASSERT_EQ(0, result, "x86 ELF should fail on ARM emulator");
+    PASS();
+}
+
+TEST(test_uf2_loader_rejects_oversized_payload) {
+    reset_cpu();
+    uint8_t uf2_data[512];
+    memset(uf2_data, 0, sizeof(uf2_data));
+
+    write_le32(uf2_data, 0, 0x0A324655);
+    write_le32(uf2_data, 4, 0x9E5D5157);
+    write_le32(uf2_data, 12, FLASH_BASE);
+    write_le32(uf2_data, 16, 512);
+    write_le32(uf2_data, 508, 0x0AB16F30);
+
+    cpu.flash[0] = 0xA5;
+    FILE *f = fopen("/tmp/test_bad.uf2", "wb");
+    ASSERT_TRUE(f != NULL, "Failed to create malformed UF2 file");
+    fwrite(uf2_data, 1, sizeof(uf2_data), f);
+    fclose(f);
+
+    int result = load_uf2("/tmp/test_bad.uf2");
+    ASSERT_EQ(0, result, "Oversized UF2 payload should be rejected");
+    ASSERT_EQ(0xA5, cpu.flash[0], "Rejected UF2 must not modify flash");
+    unlink("/tmp/test_bad.uf2");
+    PASS();
+}
+
+TEST(test_elf_loader_rejects_segment_overflow) {
+    reset_cpu();
+    uint8_t elf_data[128];
+    init_minimal_test_elf(elf_data, sizeof(elf_data));
+
+    write_le32(elf_data, 56, 84);
+    write_le32(elf_data, 60, 0xFFFFFF00);
+    write_le32(elf_data, 64, 0xFFFFFF00);
+    write_le32(elf_data, 68, 16);
+    write_le32(elf_data, 72, 1024);
+    memset(&elf_data[84], 0xAA, 16);
+
+    FILE *f = fopen("/tmp/test_overflow.elf", "wb");
+    ASSERT_TRUE(f != NULL, "Failed to create overflow ELF file");
+    fwrite(elf_data, 1, sizeof(elf_data), f);
+    fclose(f);
+
+    int result = load_elf("/tmp/test_overflow.elf");
+    ASSERT_EQ(0, result, "Overflowing ELF segment should be rejected");
+    unlink("/tmp/test_overflow.elf");
+    PASS();
+}
+
+TEST(test_elf_loader_rejects_filesz_gt_memsz) {
+    reset_cpu();
+    uint8_t elf_data[128];
+    init_minimal_test_elf(elf_data, sizeof(elf_data));
+
+    write_le32(elf_data, 56, 84);
+    write_le32(elf_data, 60, FLASH_BASE + 0x100);
+    write_le32(elf_data, 64, FLASH_BASE + 0x100);
+    write_le32(elf_data, 68, 16);
+    write_le32(elf_data, 72, 8);
+    memset(&elf_data[84], 0xBB, 16);
+
+    FILE *f = fopen("/tmp/test_filesz_gt_memsz.elf", "wb");
+    ASSERT_TRUE(f != NULL, "Failed to create invalid ELF file");
+    fwrite(elf_data, 1, sizeof(elf_data), f);
+    fclose(f);
+
+    int result = load_elf("/tmp/test_filesz_gt_memsz.elf");
+    ASSERT_EQ(0, result, "ELF with filesz > memsz should be rejected");
+    unlink("/tmp/test_filesz_gt_memsz.elf");
     PASS();
 }
 
@@ -3309,29 +3435,57 @@ TEST(test_corepool_detect_host_cpus) {
 }
 
 TEST(test_corepool_init_and_cleanup) {
+    use_corepool_test_registry();
     corepool_init();
     ASSERT_TRUE(corepool.host_cpus >= 1, "Host CPUs should be detected");
     ASSERT_EQ(0, corepool.running, "Should not be running initially");
     corepool_cleanup();
+    cleanup_corepool_test_registry();
     PASS();
 }
 
 TEST(test_corepool_register_and_unregister) {
+    use_corepool_test_registry();
     corepool_init();
     corepool_register(2);
     ASSERT_EQ(1, corepool.registered, "Should be registered");
     corepool_unregister();
     ASSERT_EQ(0, corepool.registered, "Should be unregistered");
     corepool_cleanup();
+    cleanup_corepool_test_registry();
     PASS();
 }
 
 TEST(test_corepool_query_cores_returns_valid) {
+    use_corepool_test_registry();
     corepool_init();
     int cores_recommended = corepool_query_cores();
     ASSERT_TRUE(cores_recommended >= 1, "Must recommend at least 1 core");
     ASSERT_TRUE(cores_recommended <= MAX_CORES, "Must not exceed MAX_CORES");
     corepool_cleanup();
+    cleanup_corepool_test_registry();
+    PASS();
+}
+
+TEST(test_corepool_query_cores_prunes_stale_entries) {
+    use_corepool_test_registry();
+
+    FILE *f = fopen(corepool_test_registry_path(), "w");
+    ASSERT_TRUE(f != NULL, "Failed to create corepool registry fixture");
+    fprintf(f, "999999 2 1\n");
+    fclose(f);
+
+    corepool_init();
+    int cores_recommended = corepool_query_cores();
+    ASSERT_TRUE(cores_recommended >= 1, "Query should succeed with stale entries present");
+
+    f = fopen(corepool_test_registry_path(), "r");
+    ASSERT_TRUE(f != NULL, "Registry should still exist after query");
+    ASSERT_EQ((uint32_t)EOF, (uint32_t)fgetc(f), "Stale registry entries should be pruned");
+    fclose(f);
+
+    corepool_cleanup();
+    cleanup_corepool_test_registry();
     PASS();
 }
 
@@ -3353,6 +3507,48 @@ TEST(test_wfi_sets_core_flag) {
     /* SEV should clear it */
     cores[CORE0].is_wfi = 0;
     ASSERT_EQ(0, cores[CORE0].is_wfi, "WFI flag should be cleared by SEV");
+    PASS();
+}
+
+/* ========================================================================
+ * Wire Protocol Tests
+ * ======================================================================== */
+
+TEST(test_wire_poll_handles_partial_uart_frame) {
+    reset_cpu();
+    memset(&wire_state, 0, sizeof(wire_state));
+
+    int sv[2];
+    ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, sv), "socketpair should succeed");
+
+    int flags = fcntl(sv[0], F_GETFL, 0);
+    ASSERT_TRUE(flags >= 0, "Should read socket flags");
+    ASSERT_EQ(0, fcntl(sv[0], F_SETFL, flags | O_NONBLOCK), "Should set peer socket non-blocking");
+
+    wire_state.link_count = 1;
+    wire_state.links[0].state = WIRE_CONNECTED;
+    wire_state.links[0].listen_fd = -1;
+    wire_state.links[0].peer_fd = sv[0];
+    strcpy(wire_state.links[0].path, "/tmp/bramble_test_wire.sock");
+
+    wire_msg_t msg = { .type = WIRE_MSG_UART_DATA, .channel = 0, .len = 1, .reserved = 0 };
+    uint8_t frame[sizeof(msg) + 1];
+    memcpy(frame, &msg, sizeof(msg));
+    frame[sizeof(msg)] = 'A';
+
+    ASSERT_EQ(2, write(sv[1], frame, 2), "Should write a partial frame header");
+    wire_poll();
+    ASSERT_EQ(0, uart_state[0].rx_count, "Partial frame must not be delivered");
+
+    ASSERT_EQ((uint32_t)(sizeof(frame) - 2), (uint32_t)write(sv[1], frame + 2, sizeof(frame) - 2),
+              "Should write remaining frame bytes");
+    wire_poll();
+    ASSERT_EQ(1, uart_state[0].rx_count, "Complete frame should reach UART RX");
+    ASSERT_EQ('A', uart_read32(0, UART_DR), "UART should receive the transmitted byte");
+
+    close(sv[0]);
+    close(sv[1]);
+    memset(&wire_state, 0, sizeof(wire_state));
     PASS();
 }
 
@@ -3423,10 +3619,16 @@ int main(void) {
     RUN_TEST(test_dual_core_shared_ram);
     END_CATEGORY("Dual-Core Memory");
 
+    BEGIN_CATEGORY("UF2 Loader");
+    RUN_TEST(test_uf2_loader_rejects_oversized_payload);
+    END_CATEGORY("UF2 Loader");
+
     BEGIN_CATEGORY("ELF Loader");
     RUN_TEST(test_elf_loader_valid);
     RUN_TEST(test_elf_loader_invalid_magic);
     RUN_TEST(test_elf_loader_wrong_arch);
+    RUN_TEST(test_elf_loader_rejects_segment_overflow);
+    RUN_TEST(test_elf_loader_rejects_filesz_gt_memsz);
     END_CATEGORY("ELF Loader");
 
     BEGIN_CATEGORY("Memory Bus");
@@ -3796,9 +3998,14 @@ int main(void) {
     RUN_TEST(test_corepool_init_and_cleanup);
     RUN_TEST(test_corepool_register_and_unregister);
     RUN_TEST(test_corepool_query_cores_returns_valid);
+    RUN_TEST(test_corepool_query_cores_prunes_stale_entries);
     RUN_TEST(test_num_active_cores_default);
     RUN_TEST(test_wfi_sets_core_flag);
     END_CATEGORY("Core Pool / Threading");
+
+    BEGIN_CATEGORY("Wire Protocol");
+    RUN_TEST(test_wire_poll_handles_partial_uart_frame);
+    END_CATEGORY("Wire Protocol");
 
     printf("\n========================================\n");
     printf(" Results: %d/%d passed, %d failed\n", tests_passed, tests_run, tests_failed);

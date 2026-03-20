@@ -30,6 +30,7 @@
  * ======================================================================== */
 
 #define COREPOOL_REGISTRY_PATH  "/tmp/bramble-corepool.reg"
+#define COREPOOL_REGISTRY_ENV   "BRAMBLE_COREPOOL_REGISTRY"
 #define COREPOOL_MAX_INSTANCES  16
 
 /* Per-instance registration entry */

@@ -22,6 +22,26 @@ typedef struct {
 #define UF2_MAGIC_START1 0x9E5D5157
 #define UF2_MAGIC_END    0x0AB16F30  /* End marker */
 
+static int uf2_block_flash_offset(const uf2_block_t *block, uint32_t *offset_out) {
+    if (block->payload_size > sizeof(block->data)) {
+        return 0;
+    }
+    if (block->target_addr < FLASH_BASE) {
+        return 0;
+    }
+
+    uint32_t offset = block->target_addr - FLASH_BASE;
+    if (offset > FLASH_SIZE) {
+        return 0;
+    }
+    if (block->payload_size > FLASH_SIZE - offset) {
+        return 0;
+    }
+
+    *offset_out = offset;
+    return 1;
+}
+
 int load_uf2(const char *filename) {
     FILE *f = fopen(filename, "rb");
     if (!f) {
@@ -66,15 +86,15 @@ int load_uf2(const char *filename) {
         }
 
         /* Bounds check before writing */
-        if (block.target_addr < FLASH_BASE ||
-            block.target_addr + block.payload_size > FLASH_BASE + FLASH_SIZE) {
-            fprintf(stderr, "[LOADER] WARNING: Block %d target 0x%08X out of Flash bounds\n",
-                   blocks_total, block.target_addr);
+        uint32_t offset;
+        if (!uf2_block_flash_offset(&block, &offset)) {
+            fprintf(stderr,
+                    "[LOADER] WARNING: Block %d target 0x%08X size %u out of Flash bounds\n",
+                    blocks_total, block.target_addr, block.payload_size);
             continue;
         }
 
         /* Write payload to Flash */
-        uint32_t offset = block.target_addr - FLASH_BASE;
         memcpy(&cpu.flash[offset], block.data, block.payload_size);
         blocks_loaded++;
 

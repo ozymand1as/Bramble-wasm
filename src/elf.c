@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <limits.h>
 #include "emulator.h"
 
 /* ELF32 Header */
@@ -51,10 +52,45 @@ typedef struct {
 #define EM_ARM      40      /* ARM architecture */
 #define PT_LOAD     1       /* Loadable segment */
 
+static int checked_seek(FILE *f, uint64_t offset) {
+    if (offset > (uint64_t)LONG_MAX) {
+        return 0;
+    }
+    return fseek(f, (long)offset, SEEK_SET) == 0;
+}
+
+static int region_contains(uint32_t base, uint32_t region_size,
+                           uint32_t addr, uint32_t size) {
+    if (addr < base) {
+        return 0;
+    }
+
+    uint64_t offset = (uint64_t)addr - (uint64_t)base;
+    return offset <= region_size && size <= region_size - offset;
+}
+
 int load_elf(const char *filename) {
     FILE *f = fopen(filename, "rb");
     if (!f) {
         perror("[ELF] Failed to open file");
+        return 0;
+    }
+
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fprintf(stderr, "[ELF] ERROR: Failed to size ELF file\n");
+        fclose(f);
+        return 0;
+    }
+    long file_size_long = ftell(f);
+    if (file_size_long < 0) {
+        fprintf(stderr, "[ELF] ERROR: Failed to size ELF file\n");
+        fclose(f);
+        return 0;
+    }
+    uint64_t file_size = (uint64_t)file_size_long;
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "[ELF] ERROR: Failed to rewind ELF file\n");
+        fclose(f);
         return 0;
     }
 
@@ -102,15 +138,27 @@ int load_elf(const char *filename) {
         fclose(f);
         return 0;
     }
+    if (ehdr.e_phentsize < sizeof(elf32_phdr_t)) {
+        fprintf(stderr, "[ELF] ERROR: Program headers are too small (%u)\n", ehdr.e_phentsize);
+        fclose(f);
+        return 0;
+    }
+
+    uint64_t phdr_table_size = (uint64_t)ehdr.e_phentsize * (uint64_t)ehdr.e_phnum;
+    if ((uint64_t)ehdr.e_phoff > file_size || phdr_table_size > file_size - ehdr.e_phoff) {
+        fprintf(stderr, "[ELF] ERROR: Program header table outside file bounds\n");
+        fclose(f);
+        return 0;
+    }
 
     /* Read and process program headers */
     int segments_loaded = 0;
 
     for (int i = 0; i < ehdr.e_phnum; i++) {
         elf32_phdr_t phdr;
-        long offset = (long)ehdr.e_phoff + (long)i * ehdr.e_phentsize;
+        uint64_t offset = (uint64_t)ehdr.e_phoff + (uint64_t)i * ehdr.e_phentsize;
 
-        if (fseek(f, offset, SEEK_SET) != 0) {
+        if (!checked_seek(f, offset)) {
             fprintf(stderr, "[ELF] ERROR: Failed to seek to program header %d\n", i);
             continue;
         }
@@ -128,6 +176,18 @@ int load_elf(const char *filename) {
         fprintf(stderr, "[ELF] LOAD segment %d: vaddr=0x%08X paddr=0x%08X filesz=%u memsz=%u\n",
                i, phdr.p_vaddr, phdr.p_paddr, phdr.p_filesz, phdr.p_memsz);
 
+        if (phdr.p_filesz > phdr.p_memsz) {
+            fprintf(stderr,
+                    "[ELF] WARNING: Segment %d has filesz > memsz (%u > %u), skipping\n",
+                    i, phdr.p_filesz, phdr.p_memsz);
+            continue;
+        }
+        if ((uint64_t)phdr.p_offset > file_size ||
+            (uint64_t)phdr.p_filesz > file_size - phdr.p_offset) {
+            fprintf(stderr, "[ELF] WARNING: Segment %d file range outside ELF bounds, skipping\n", i);
+            continue;
+        }
+
         /* Load segments to their runtime virtual address.
          *
          * Pico SDK ELFs commonly use p_paddr as the load memory address (LMA)
@@ -143,7 +203,7 @@ int load_elf(const char *filename) {
         uint32_t target = phdr.p_vaddr;
 
         /* Load into flash */
-        if (target >= FLASH_BASE && target + phdr.p_memsz <= FLASH_BASE + FLASH_SIZE) {
+        if (region_contains(FLASH_BASE, FLASH_SIZE, target, phdr.p_memsz)) {
             uint32_t flash_offset = target - FLASH_BASE;
 
             /* Zero the memory region first (for .bss-like sections where memsz > filesz) */
@@ -153,7 +213,7 @@ int load_elf(const char *filename) {
 
             /* Load file data */
             if (phdr.p_filesz > 0) {
-                if (fseek(f, (long)phdr.p_offset, SEEK_SET) != 0) {
+                if (!checked_seek(f, phdr.p_offset)) {
                     fprintf(stderr, "[ELF] ERROR: Failed to seek to segment data\n");
                     continue;
                 }
@@ -168,7 +228,7 @@ int load_elf(const char *filename) {
             segments_loaded++;
         }
         /* Load into RAM */
-        else if (target >= RAM_BASE && target + phdr.p_memsz <= RAM_BASE + RAM_SIZE) {
+        else if (region_contains(RAM_BASE, RAM_SIZE, target, phdr.p_memsz)) {
             uint32_t ram_offset = target - RAM_BASE;
 
             if (phdr.p_memsz > 0) {
@@ -176,7 +236,7 @@ int load_elf(const char *filename) {
             }
 
             if (phdr.p_filesz > 0) {
-                if (fseek(f, (long)phdr.p_offset, SEEK_SET) != 0) {
+                if (!checked_seek(f, phdr.p_offset)) {
                     fprintf(stderr, "[ELF] ERROR: Failed to seek to segment data\n");
                     continue;
                 }
@@ -189,12 +249,11 @@ int load_elf(const char *filename) {
 
             fprintf(stderr, "[ELF] Loaded %u bytes to RAM[0x%08X]\n", phdr.p_filesz, ram_offset);
 
-            if (phdr.p_paddr >= FLASH_BASE &&
-                phdr.p_paddr + phdr.p_filesz <= FLASH_BASE + FLASH_SIZE &&
+            if (region_contains(FLASH_BASE, FLASH_SIZE, phdr.p_paddr, phdr.p_filesz) &&
                 phdr.p_paddr != phdr.p_vaddr) {
                 uint32_t flash_offset = phdr.p_paddr - FLASH_BASE;
 
-                if (fseek(f, (long)phdr.p_offset, SEEK_SET) != 0) {
+                if (!checked_seek(f, phdr.p_offset)) {
                     fprintf(stderr, "[ELF] ERROR: Failed to seek to RAM LMA data\n");
                     continue;
                 }
