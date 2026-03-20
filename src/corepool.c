@@ -403,6 +403,20 @@ void corepool_start_threads(void) {
     }
 }
 
+void corepool_start_core_thread(int core_id) {
+    if (core_id < 0 || core_id >= NUM_CORES) return;
+    if (corepool.thread_active[core_id]) return; /* Already running */
+    if (!corepool.running) return; /* Not in threaded mode */
+
+    if (pthread_create(&corepool.threads[core_id], NULL,
+                       core_thread_fn, (void *)(intptr_t)core_id) == 0) {
+        corepool.thread_active[core_id] = 1;
+        fprintf(stderr, "[CorePool] Started thread for Core %d (dynamic launch)\n", core_id);
+    } else {
+        fprintf(stderr, "[CorePool] Failed to start thread for Core %d\n", core_id);
+    }
+}
+
 void corepool_stop_threads(void) {
     corepool.running = 0;
 

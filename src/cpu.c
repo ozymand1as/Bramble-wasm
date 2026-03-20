@@ -1701,6 +1701,15 @@ int sio_core1_bootrom_handle_fifo_write(uint32_t val) {
         cores[CORE1].is_halted = 0;
         core1_bootrom.waiting_for_launch = 0;
         core1_bootrom.launch_count = 0;
+
+        /* Auto-activate Core 1 so dual_core_step/corepool will step it */
+        if (num_active_cores < 2) {
+            num_active_cores = 2;
+            fprintf(stderr, "[CORE1] Launched by firmware — dual-core now active\n");
+            /* If threaded mode is active, start a thread for Core 1 */
+            corepool_start_core_thread(CORE1);
+        }
+
         corepool_wake_cores();  /* Wake Core 1 thread */
     }
 

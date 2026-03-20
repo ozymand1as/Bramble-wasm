@@ -73,6 +73,9 @@ int corepool_query_cores(void);
 /* Start threaded execution: spawns a pthread per active core */
 void corepool_start_threads(void);
 
+/* Start a thread for a specific core (for dynamic Core 1 launch) */
+void corepool_start_core_thread(int core_id);
+
 /* Stop all core threads and join */
 void corepool_stop_threads(void);
 
