@@ -60,7 +60,9 @@ void tapif_close(int fd) {
 
 int tapif_read(int fd, uint8_t *buf, int maxlen) {
     if (fd < 0) return -1;
-    ssize_t n = read(fd, buf, maxlen);
+    /* Clamp to Ethernet max frame size (prevent oversized frames) */
+    if (maxlen > 1518) maxlen = 1518;
+    ssize_t n = read(fd, buf, (size_t)maxlen);
     if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
         return -1;
@@ -70,6 +72,17 @@ int tapif_read(int fd, uint8_t *buf, int maxlen) {
 
 int tapif_write(int fd, const uint8_t *buf, int len) {
     if (fd < 0) return -1;
-    ssize_t n = write(fd, buf, len);
-    return (int)n;
+    int total = 0;
+    while (total < len) {
+        ssize_t n = write(fd, buf + total, (size_t)(len - total));
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                /* Non-blocking: return what we wrote so far */
+                return total > 0 ? total : 0;
+            }
+            return -1;
+        }
+        total += (int)n;
+    }
+    return total;
 }

@@ -1,5 +1,21 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.36.0] - 2026-03-20
+
+### Fixed - FUSE Flash Sharing and TAP Bridge Hardening
+
+- **FUSE flash mutex race**: ROM `flash_range_erase` and `flash_range_program` now lock `fuse_flash_mutex` before modifying `cpu.flash[]`. Previously, concurrent FUSE reads during firmware flash writes produced torn data.
+- **FUSE no longer requires sudo**: FUSE3 user mounts work without root privileges. Removed `-mount` from the automatic privilege escalation check — only `-tap` needs root.
+- **Configurable filesystem offset**: New `-mount-offset <hex>` flag (default `0x100000`) replaces the hardcoded CircuitPython 1MB offset. Different firmware (littleOS, MicroPython) may use different flash layouts.
+- **TAP partial write retry**: `tapif_write()` now retries on partial `write()` returns instead of silently losing trailing bytes.
+- **TAP MTU clamping**: `tapif_read()` clamps reads to 1518 bytes (max Ethernet frame) to prevent oversized frames from overflowing CYW43 buffers.
+
+### Tests
+
+- 276 tests passing.
+
+---
+
 ## [0.35.0] - 2026-03-20
 
 ### Added - Advanced Developer Tools

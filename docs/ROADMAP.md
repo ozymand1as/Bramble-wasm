@@ -1,6 +1,6 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.35.0
+## Current State: v0.36.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
@@ -14,19 +14,17 @@
 | Networking | UART-to-TCP | Bridge UART to TCP server/client for remote serial access |
 | Multi-Device | Wire protocol | Unix socket IPC for UART/GPIO between Bramble instances |
 | Threading | Host-threaded | pthread-per-core, WFI sleep, dynamic core allocation, multi-instance pool |
-| Privilege | Auto-sudo | `-tap` and `-mount` detect missing root and re-exec via sudo |
+| Privilege | Auto-sudo | `-tap` auto-escalates via sudo; FUSE mounts work without root |
 | Dev Tools | 18 tools | Semihosting, coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus log, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |
 | Validation | 276 tests | Loader hardening, core pool, wire transport, watchdog reset, console routing, memory-map aliases, exception-path, and multicore reboot coverage |
 
-### Recent Changes (v0.35.0)
+### Recent Changes (v0.36.0)
 
-- 12 new developer tools: symbols, callgraph, stack check, IRQ latency, bus logging (UART/SPI/I2C), GPIO VCD trace, scripted I/O, expected output matching, memory watch, fault injection, cycle profiling, memory heatmap.
-- All tools gated behind `__builtin_expect(flag, 0)` — zero overhead when disabled.
-- GPIO VCD output for GTKWave/PulseView visualization of pin changes.
-- Call graph output in DOT format for Graphviz function relationship visualization.
-- IRQ latency min/avg/max measurement per interrupt number.
-- Scripted I/O enables reproducible integration testing without `-stdin`.
-- Expected output matching enables one-command golden file regression tests.
+- **FUSE flash sharing hardened**: ROM flash writes now lock `fuse_flash_mutex`, preventing torn reads during concurrent host/firmware access.
+- **FUSE no longer requires sudo**: Removed from privilege escalation (only `-tap` needs root).
+- **Configurable mount offset**: `-mount-offset <hex>` replaces hardcoded 1MB CircuitPython offset.
+- **TAP bridge hardened**: partial write retry, MTU clamping to 1518 bytes.
+- 12 new developer tools (v0.35.0): symbols, callgraph, stack check, IRQ latency, bus logging, GPIO VCD, scripted I/O, expect, watch, fault injection, cycle profiling, memory heatmap.
 
 ---
 

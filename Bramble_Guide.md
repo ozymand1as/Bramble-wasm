@@ -162,7 +162,8 @@ bramble <firmware.uf2|firmware.elf> [options]
 | Flag | Arguments | Description |
 |------|-----------|-------------|
 | `-flash` | `<path>` | Persistent flash storage (2 MB file); saves/restores across runs |
-| `-mount` | `<dir>` | Mount flash FAT filesystem as host directory via FUSE (requires `-flash`, sudo) |
+| `-mount` | `<dir>` | Mount flash FAT filesystem as host directory via FUSE (requires `-flash`) |
+| `-mount-offset` | `<hex>` | Flash offset of FAT region (default: `0x100000` for CircuitPython) |
 | `-sdcard` | `<path>` | Attach SD card image file to SPI bus |
 | `-sdcard-spi` | `<0\|1>` | SPI bus for SD card (default: 1) |
 | `-sdcard-size` | `<MB>` | SD card size in MB (default: 64) |
@@ -170,7 +171,7 @@ bramble <firmware.uf2|firmware.elf> [options]
 | `-emmc-spi` | `<0\|1>` | SPI bus for eMMC (default: 0) |
 | `-emmc-size` | `<MB>` | eMMC size in MB (default: 128) |
 
-## 3.4 Networking Options
+## 3.5 Networking Options
 
 | Flag | Arguments | Description |
 |------|-----------|-------------|
@@ -179,7 +180,7 @@ bramble <firmware.uf2|firmware.elf> [options]
 | `-net-uart0-connect` | `<host:port>` | Connect UART0 to remote TCP host:port (client mode) |
 | `-net-uart1-connect` | `<host:port>` | Connect UART1 to remote TCP host:port (client mode) |
 
-## 3.5 Multi-Device Wiring Options
+## 3.6 Multi-Device Wiring Options
 
 | Flag | Arguments | Description |
 |------|-----------|-------------|
@@ -187,7 +188,7 @@ bramble <firmware.uf2|firmware.elf> [options]
 | `-wire-uart1` | `<path>` | Wire UART1 to peer Bramble instance via Unix domain socket |
 | `-wire-gpio` | `<path>` | Wire GPIO pin state to peer via Unix domain socket |
 
-## 3.6 WiFi Options
+## 3.7 WiFi Options
 
 | Flag | Arguments | Description |
 |------|-----------|-------------|
@@ -1259,6 +1260,7 @@ Version source of truth: `CHANGELOG.md` (including the `Unreleased` section for 
 
 | Version | Key Features |
 |---------|-------------|
+| v0.36.0 | FUSE flash mutex fix, TAP partial write/MTU hardening, configurable mount offset, FUSE no longer needs sudo |
 | v0.35.0 | Advanced devtools: symbols, callgraph, VCD, IRQ latency, stack check, bus logging, script I/O, expect, watch, fault injection, cycle profile, heatmap |
 | v0.34.0 | Developer tools (semihosting, coverage, hotspots, trace, exit codes, timeouts), SYSCFG + TBMAN peripherals, JIT fixes |
 | v0.33.0 | Auto-sudo for `-tap`/`-mount`, watchdog reboot resets full multicore state, SysTick reset on reboot |

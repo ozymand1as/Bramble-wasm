@@ -318,7 +318,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -no-boot2  Skip boot2 even if detected in firmware\n");
         fprintf(stderr, "  -debug-mem Log unmapped peripheral accesses\n");
         fprintf(stderr, "  -flash <path> Persistent flash storage (2MB file)\n");
-        fprintf(stderr, "  -mount <dir>  Mount flash FAT filesystem via FUSE (requires -flash, sudo)\n");
+        fprintf(stderr, "  -mount <dir>  Mount flash FAT filesystem via FUSE (requires -flash)\n");
+        fprintf(stderr, "  -mount-offset <hex>  Flash offset of FAT region (default: 0x100000)\n");
         fprintf(stderr, "\nStorage:\n");
         fprintf(stderr, "  -sdcard <path>              Attach SD card image to SPI1\n");
         fprintf(stderr, "  -sdcard-spi <0|1>           SPI bus for SD card (default: 1)\n");
@@ -374,6 +375,7 @@ int main(int argc, char **argv) {
     int no_boot2 = 0;
     char *flash_path = NULL;
     char *mount_path = NULL;
+    uint32_t mount_offset = 0x100000; /* Default: CircuitPython 1MB offset */
     char *sdcard_path = NULL;
     int sdcard_spi = 1;
     size_t sdcard_size = SD_DEFAULT_SIZE;
@@ -458,6 +460,10 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "-mount") == 0) {
             if (i + 1 < argc) {
                 mount_path = argv[++i];
+            }
+        } else if (strcmp(argv[i], "-mount-offset") == 0) {
+            if (i + 1 < argc) {
+                mount_offset = (uint32_t)strtoul(argv[++i], NULL, 0);
             }
         } else if (strcmp(argv[i], "-sdcard") == 0) {
             if (i + 1 < argc) {
@@ -613,7 +619,8 @@ int main(int argc, char **argv) {
      * ======================================================================== */
 
     {
-        int needs_privilege = (tap_name != NULL) || (mount_path != NULL);
+        /* Only TAP requires root (FUSE3 user mounts work without sudo) */
+        int needs_privilege = (tap_name != NULL);
         if (needs_privilege && geteuid() != 0 && getenv("BRAMBLE_ESCALATED") == NULL) {
             /* Explain why we need elevated privileges */
             fprintf(stderr, "\n[Privilege] The following features require superuser access:\n");
@@ -752,8 +759,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[Error] -mount requires -flash <path>\n");
             return EXIT_FAILURE;
         }
-        /* CircuitPython filesystem starts at 1MB offset in flash */
-        uint32_t fs_offset = 0x100000;
+        uint32_t fs_offset = mount_offset;
         uint32_t fs_size = FLASH_SIZE - fs_offset;
         fuse_set_flash_offset(fs_offset);
         fuse_mount_start(&cpu.flash[fs_offset], fs_size, mount_path);

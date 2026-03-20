@@ -2,9 +2,9 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.35.0
+## Current Status: v0.36.0
 
-276 tests passing. Boots and runs Pico SDK firmware including **MicroPython v1.27.0**, **CircuitPython 10.1.3**, and **littleOS**, with Pico W/CYW43 support, USB CDC REPL, flash write-through persistence, SD card and eMMC emulation, UART-to-TCP networking, multi-instance wiring, GDB watchpoints, host-threaded execution, a decoded instruction cache, optional JIT acceleration, automatic privilege escalation, ARM semihosting, code coverage, hotspot profiling, cycle profiling, call graphs, GPIO VCD traces, IRQ latency analysis, scripted I/O, golden file testing, and full CI integration.
+276 tests passing. Boots and runs Pico SDK firmware including **MicroPython v1.27.0**, **CircuitPython 10.1.3**, and **littleOS**, with Pico W/CYW43 support, USB CDC REPL, flash write-through persistence with live FUSE mount, SD card and eMMC emulation, UART-to-TCP networking, multi-instance wiring, GDB watchpoints, host-threaded execution, a decoded instruction cache, optional JIT acceleration, automatic privilege escalation, ARM semihosting, code coverage, hotspot profiling, cycle profiling, call graphs, GPIO VCD traces, IRQ latency analysis, scripted I/O, golden file testing, and full CI integration.
 
 ### Coverage
 
@@ -17,11 +17,11 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 | Exceptions | ~95% | NVIC priority preemption, SysTick, PendSV, SVCall, HardFault, nested returns, `cpu_step()` IRQ delivery, double-fault lockup |
 | Timing | Cycle-accurate | Configurable clock (`-clock 125`), ARMv6-M instruction costs |
 | Debugging | GDB RSP | Breakpoints, watchpoints, conditional breakpoints, dual-core threads (`-gdb`) |
-| Flash | Write-through | `-flash <path>` with immediate sync on every write |
+| Flash | Write-through + FUSE | `-flash <path>` with sync; `-mount <dir>` for live host access (thread-safe) |
 | Storage | SD card + eMMC | SPI-attached file-backed block devices |
 | WiFi | CYW43 (Pico W) | gSPI-over-PIO emulation with optional TAP bridge (`-wifi`, `-tap`) |
 | Performance | ICache + JIT | 64K decoded cache by default, optional hot-block JIT (`-jit`) |
-| Privilege | Auto-sudo | `-tap` and `-mount` auto-escalate with `BRAMBLE_ESCALATED` guard |
+| Privilege | Auto-sudo | `-tap` auto-escalates via sudo (FUSE mounts work without root) |
 | Dev Tools | 18 tools | Semihosting, coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus logging, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |
 | Tests | 276 | CTest integrated, 50+ categories |
 

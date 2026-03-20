@@ -4,6 +4,7 @@
 #include "rom.h"
 #include "emulator.h"
 #include "storage.h"
+#include "fuse_mount.h"
 
 /* ROM image buffer */
 uint8_t rom_image[ROM_SIZE];
@@ -439,8 +440,10 @@ static int rom_intercept_flash(uint32_t pc) {
         uint32_t offs = cpu.r[0];
         uint32_t count = cpu.r[1];
         if (offs + count <= FLASH_SIZE) {
+            pthread_mutex_lock(&fuse_flash_mutex);
             memset(&cpu.flash[offs], 0xFF, count);
             flash_persist_sync(offs, count);
+            pthread_mutex_unlock(&fuse_flash_mutex);
         }
         return 1;
     }
@@ -450,10 +453,12 @@ static int rom_intercept_flash(uint32_t pc) {
         uint32_t src = cpu.r[1];
         uint32_t count = cpu.r[2];
         if (offs + count <= FLASH_SIZE) {
+            pthread_mutex_lock(&fuse_flash_mutex);
             for (uint32_t i = 0; i < count; i++) {
                 cpu.flash[offs + i] = mem_read8(src + i);
             }
             flash_persist_sync(offs, count);
+            pthread_mutex_unlock(&fuse_flash_mutex);
         }
         return 1;
     }
