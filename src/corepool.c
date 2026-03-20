@@ -24,6 +24,8 @@
 #include "emulator.h"
 #include "nvic.h"
 #include "pio.h"
+#include "rtc.h"
+#include "timer.h"
 #include "usb.h"
 
 /*
@@ -36,6 +38,19 @@
 #define COREPOOL_STEP_QUANTUM_MAX     4096
 
 corepool_state_t corepool = {0};
+
+static uint32_t corepool_elapsed_us_from_wait(const struct timespec *start,
+                                              const struct timespec *end) {
+    uint64_t start_ns = (uint64_t)start->tv_sec * 1000000000ull + (uint64_t)start->tv_nsec;
+    uint64_t end_ns = (uint64_t)end->tv_sec * 1000000000ull + (uint64_t)end->tv_nsec;
+
+    if (end_ns <= start_ns) {
+        return 0;
+    }
+
+    uint32_t elapsed_us = (uint32_t)((end_ns - start_ns) / 1000ull);
+    return elapsed_us;
+}
 
 /* ========================================================================
  * Host CPU Detection
@@ -297,44 +312,68 @@ static void *core_thread_fn(void *arg) {
 
             if (!wake) {
                 /* Sleep with 1ms timeout (for periodic checks) */
+                struct timespec start;
                 struct timespec ts;
-                clock_gettime(CLOCK_MONOTONIC, &ts);
+                struct timespec end;
+
+                clock_gettime(CLOCK_MONOTONIC, &start);
+                ts = start;
                 ts.tv_nsec += 1000000;  /* 1ms */
                 if (ts.tv_nsec >= 1000000000) {
                     ts.tv_sec++;
                     ts.tv_nsec -= 1000000000;
                 }
                 pthread_cond_timedwait(&corepool.wfi_cond, &corepool.emu_lock, &ts);
+
+                clock_gettime(CLOCK_MONOTONIC, &end);
+                uint32_t elapsed_us = corepool_elapsed_us_from_wait(&start, &end);
+
+                if (elapsed_us > 0) {
+                    uint64_t elapsed_cycles = (uint64_t)elapsed_us * timing_config.cycles_per_us;
+                    if (elapsed_cycles > 0xFFFFFFFFu) {
+                        elapsed_cycles = 0xFFFFFFFFu;
+                    }
+                    systick_tick_for_core(core_id, (uint32_t)elapsed_cycles);
+                }
+
+                /* If every active core is sleeping/halted, use host elapsed time
+                 * as a fallback so timer-driven wakeups still happen. */
+                if (core_id == CORE0 &&
+                    (num_active_cores == 1 || cores[CORE1].is_wfi || cores[CORE1].is_halted) &&
+                    elapsed_us > 0) {
+                    timer_tick(elapsed_us);
+                    rtc_tick(elapsed_us);
+                }
+
                 pthread_mutex_unlock(&corepool.emu_lock);
                 continue;
             }
             cores[core_id].is_wfi = 0;
         }
 
-        cpu_bind_context_t ctx;
-        if (!cpu_bind_core_context(core_id, &ctx)) {
-            pthread_mutex_unlock(&corepool.emu_lock);
-            continue;
+        cpu_bind_context_t bind_ctx;
+        int bound = cpu_bind_core_context(core_id, &bind_ctx);
+        if (bound) {
+            for (int steps = 0; steps < corepool.step_quantum; steps++) {
+                if (!corepool.running || cores[core_id].is_wfi) {
+                    break;
+                }
+
+                cpu_step();
+
+                /* Shared peripheral progression stays tied to guest instruction flow. */
+                if (core_id == CORE0) {
+                    pio_step();
+                    usb_step();
+                }
+
+                if (cpu.r[15] == 0xFFFFFFFF) {
+                    break;
+                }
+            }
+
+            cpu_unbind_core_context(core_id, &bind_ctx);
         }
-
-        for (int steps = 0; steps < corepool.step_quantum; steps++) {
-            if (!corepool.running || cores[core_id].is_wfi) {
-                break;
-            }
-
-            cpu_step();
-
-            /* Shared peripheral progression stays tied to guest instruction flow. */
-            if (core_id == CORE0) {
-                pio_step();
-                usb_step();
-            }
-
-            if (cpu.r[15] == 0xFFFFFFFF) {
-                break;
-            }
-        }
-        cpu_unbind_core_context(core_id, &ctx);
 
         pthread_mutex_unlock(&corepool.emu_lock);
 

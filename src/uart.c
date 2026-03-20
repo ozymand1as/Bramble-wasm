@@ -13,6 +13,7 @@ static void uart_reset_instance(uart_state_t *u) {
     memset(u, 0, sizeof(*u));
     u->ifls = 0x12;  /* Reset FIFO trigger levels */
     u->enabled = 0;
+    u->tx_activity = 0;
 }
 
 void uart_init(void) {
@@ -76,6 +77,14 @@ int uart_rx_push(int uart_num, uint8_t data) {
     uart_rx_update_irq(u);
     uart_check_irq(uart_num);
     return 1;
+}
+
+int uart_stdio_active(int uart_num) {
+    if (uart_num < 0 || uart_num > 1) {
+        return 0;
+    }
+
+    return uart_state[uart_num].tx_activity > 0;
 }
 
 static uint8_t uart_rx_pop(uart_state_t *u) {
@@ -170,6 +179,7 @@ void uart_write32(int uart_num, uint32_t offset, uint32_t val) {
         u->dr = val;
         if (u->cr & UART_CR_TXE) {
             uint8_t ch = (uint8_t)(val & 0xFF);
+            u->tx_activity++;
             if (net_bridge_uart_active(uart_num)) {
                 net_bridge_uart_tx(uart_num, ch);
             } else if (wire_uart_active(uart_num)) {

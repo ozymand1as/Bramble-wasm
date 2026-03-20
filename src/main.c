@@ -76,6 +76,7 @@ static size_t stdin_pending_head = 0;
 static size_t stdin_pending_tail = 0;
 static size_t stdin_pending_count = 0;
 static int stdin_pending_overflow_reported = 0;
+static int stdin_saw_cr = 0;
 
 static int stdin_pending_push(uint8_t byte) {
     if (stdin_pending_count >= STDIN_PENDING_SIZE) {
@@ -115,12 +116,17 @@ static int stdin_uart0_rx_ready(void) {
     return (uart0_cr & UART_CR_UARTEN) && (uart0_cr & UART_CR_RXE);
 }
 
+static int stdin_uart0_console_active(void) {
+    return stdin_uart0_rx_ready() && uart_stdio_active(0);
+}
+
 static void uart_stdin_init(void) {
     stdin_is_tty = isatty(STDIN_FILENO);
     stdin_pending_head = 0;
     stdin_pending_tail = 0;
     stdin_pending_count = 0;
     stdin_pending_overflow_reported = 0;
+    stdin_saw_cr = 0;
 
     /* Set stdin to non-blocking mode */
     int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
@@ -157,17 +163,19 @@ static void uart_stdin_cleanup(void) {
 }
 
 /* Select the most likely guest input target for stdin.
- * Interactive shells like littleOS keep UART0 RX enabled even when they
- * render output over USB CDC, while USB-only REPLs typically do not.
- * Host input stays queued until at least one guest console is ready. */
+ * Prefer a UART0 console only after firmware has actually used UART0 for
+ * stdio. That keeps littleOS interactive while still allowing USB-only
+ * shells such as MicroPython to consume stdin through CDC. */
 static stdin_target_t stdin_select_target(void) {
     int usb_ready = usb_cdc_stdout_enabled && usb_cdc_stdio_active();
     int uart_ready = stdin_uart0_rx_ready();
+    int uart_console_ready = stdin_uart0_console_active();
+
+    if (uart_console_ready) {
+        return STDIN_TARGET_UART0;
+    }
 
     if (usb_ready) {
-        if (stdin_is_tty && uart_ready) {
-            return STDIN_TARGET_UART0;
-        }
         return STDIN_TARGET_USB_CDC;
     }
 
@@ -209,8 +217,24 @@ static void uart_stdin_poll(void) {
         if (n > 0) {
             for (ssize_t i = 0; i < n; i++) {
                 uint8_t ch = buf[i];
-                /* Translate LF→CR: serial devices expect CR as line ending */
-                if (ch == '\n') ch = '\r';
+
+                /* Normalize line endings to LF so guest shells reliably treat
+                 * Enter/Return and piped input as a single submitted line. */
+                if (ch == '\r') {
+                    stdin_pending_push('\n');
+                    stdin_saw_cr = 1;
+                    continue;
+                }
+                if (ch == '\n') {
+                    if (stdin_saw_cr) {
+                        stdin_saw_cr = 0;
+                        continue;
+                    }
+                    stdin_pending_push('\n');
+                    continue;
+                }
+
+                stdin_saw_cr = 0;
                 stdin_pending_push(ch);
             }
         }
@@ -287,7 +311,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -stdin     Enable stdin polling for guest console input\n");
         fprintf(stderr, "  -gdb [port] Start GDB server (default port: %d)\n", GDB_DEFAULT_PORT);
         fprintf(stderr, "  -clock <MHz> Set CPU clock frequency (default: 1, real: 125)\n");
-        fprintf(stderr, "  -cores <N|auto> Active cores per instance (1, 2, or auto; default: 2)\n");
+        fprintf(stderr, "  -cores <N|auto> Active cores per instance (1, 2, or auto; default: 1)\n");
         fprintf(stderr, "  -thread-quantum <N> Guest instructions per threaded timeslice (default: 64)\n");
         fprintf(stderr, "  -no-boot2  Skip boot2 even if detected in firmware\n");
         fprintf(stderr, "  -debug-mem Log unmapped peripheral accesses\n");

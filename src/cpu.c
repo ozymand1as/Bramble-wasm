@@ -994,12 +994,18 @@ void cpu_exception_return(uint32_t lr_value) {
  * ======================================================================== */
 
 static void timing_tick(uint32_t cycles) {
-    /* Timer and RTC: only advance for core 0 to avoid double-counting.
-     * On real RP2040, the timer runs at 1 MHz off the system clock,
-     * independent of how many cores are active. In the interleaved
-     * emulation model, both cores' cycles would otherwise sum up,
-     * making the timer run 2x too fast in dual-core mode. */
-    if (get_active_core() == 0) {
+    /* Timer and RTC: advance from Core 0 in the normal case, but let the
+     * currently executing core own shared time whenever Core 0 is asleep or
+     * halted so dual-core workloads do not starve the system timer. */
+    int owner_core = get_active_core();
+    int advance_shared_time = (owner_core == CORE0);
+
+    if (!advance_shared_time &&
+        (num_active_cores == 1 || cores[CORE0].is_wfi || cores[CORE0].is_halted)) {
+        advance_shared_time = 1;
+    }
+
+    if (advance_shared_time) {
         timing_config.cycle_accumulator += cycles;
         uint32_t us = timing_config.cycle_accumulator / timing_config.cycles_per_us;
         if (us > 0) {
@@ -1200,7 +1206,7 @@ uint32_t shared_ram[SHARED_RAM_SIZE / 4] = {0};
 uint32_t spinlocks[SPINLOCK_SIZE] = {0};
 multicore_fifo_t fifo[NUM_CORES] = {0};
 
-int num_active_cores = MAX_CORES;  /* Runtime-configurable, default: all cores */
+int num_active_cores = 1;  /* Runtime-configurable, default to stable single-core */
 static int active_core = CORE0;
 
 int get_active_core(void) {
@@ -1330,18 +1336,64 @@ void cpu_unbind_core_context(int core_id, const cpu_bind_context_t *ctx) {
     cpu.control = ctx->control;
 
     mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
-    set_active_core(ctx->active_core);
+    /* Preserve the old cpu_step_core() behavior: after a core runs, the
+     * active-core routing remains on that core for subsequent NVIC/SIO work. */
+    set_active_core(core_id);
 }
 
 void cpu_step_core(int core_id) {
-    cpu_bind_context_t ctx;
-
-    if (!cpu_bind_core_context(core_id, &ctx)) {
+    if (core_id >= NUM_CORES || cores[core_id].is_halted) {
         return;
     }
 
+    uint32_t saved_r[16];
+    memcpy(saved_r, cpu.r, sizeof(saved_r));
+    uint32_t saved_xpsr = cpu.xpsr;
+    uint32_t saved_vtor = cpu.vtor;
+    uint32_t saved_step = cpu.step_count;
+    int saved_debug = cpu.debug_enabled;
+    int saved_debug_asm = cpu.debug_asm;
+    uint32_t saved_irq = cpu.current_irq;
+    uint32_t saved_primask = cpu.primask;
+    uint32_t saved_control = cpu.control;
+
+    memcpy(cpu.r, cores[core_id].r, sizeof(cpu.r));
+    cpu.xpsr = cores[core_id].xpsr;
+    cpu.vtor = cores[core_id].vtor;
+    cpu.step_count = cores[core_id].step_count;
+    cpu.debug_enabled = cores[core_id].debug_enabled;
+    cpu.debug_asm = cores[core_id].debug_asm;
+    cpu.current_irq = cores[core_id].current_irq;
+    cpu.primask = cores[core_id].primask;
+    cpu.control = cores[core_id].control;
+
+    mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
+    set_active_core(core_id);
+
     cpu_step();
-    cpu_unbind_core_context(core_id, &ctx);
+
+    memcpy(cores[core_id].r, cpu.r, sizeof(cpu.r));
+    cores[core_id].xpsr = cpu.xpsr;
+    cores[core_id].vtor = cpu.vtor;
+    cores[core_id].step_count = cpu.step_count;
+    cores[core_id].current_irq = cpu.current_irq;
+    cores[core_id].primask = cpu.primask;
+    cores[core_id].control = cpu.control;
+
+    if (cpu.r[15] == 0xFFFFFFFF) {
+        cores[core_id].is_halted = 1;
+    }
+
+    memcpy(cpu.r, saved_r, sizeof(saved_r));
+    cpu.xpsr = saved_xpsr;
+    cpu.vtor = saved_vtor;
+    cpu.step_count = saved_step;
+    cpu.debug_enabled = saved_debug;
+    cpu.debug_asm = saved_debug_asm;
+    cpu.current_irq = saved_irq;
+    cpu.primask = saved_primask;
+    cpu.control = saved_control;
+    mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
 }
 
 void dual_core_step(void) {
@@ -1353,14 +1405,20 @@ void dual_core_step(void) {
 
         /* Skip cores sleeping in WFI/WFE — wake when interrupt pending */
         if (cores[c].is_wfi) {
-            /* Time still advances while core is sleeping.
-             * Advance timer directly (not through timing_tick which is core-gated) */
-            timing_config.cycle_accumulator += 1;
-            uint32_t us = timing_config.cycle_accumulator / timing_config.cycles_per_us;
-            if (us > 0) {
-                timing_config.cycle_accumulator -= us * timing_config.cycles_per_us;
-                timer_tick(us);
-                rtc_tick(us);
+            /* SysTick keeps running while the core is asleep. */
+            systick_tick_for_core(c, 1);
+
+            /* If every active core is currently asleep/halted, keep the shared
+             * timer moving so timer-driven wakeups can still happen. */
+            if (c == CORE0 &&
+                (num_active_cores == 1 || cores[CORE1].is_wfi || cores[CORE1].is_halted)) {
+                timing_config.cycle_accumulator += 1;
+                uint32_t us = timing_config.cycle_accumulator / timing_config.cycles_per_us;
+                if (us > 0) {
+                    timing_config.cycle_accumulator -= us * timing_config.cycles_per_us;
+                    timer_tick(us);
+                    rtc_tick(us);
+                }
             }
 
             /* Check for pending interrupt that would wake this core */

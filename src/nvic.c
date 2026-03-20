@@ -86,6 +86,17 @@ void systick_tick(uint32_t cycles) {
     }
 }
 
+void systick_tick_for_core(int core_id, uint32_t cycles) {
+    if (core_id < 0 || core_id >= NUM_CORES) {
+        return;
+    }
+
+    int saved_core = get_active_core();
+    set_active_core(core_id);
+    systick_tick(cycles);
+    set_active_core(saved_core);
+}
+
 /**
  * Get effective priority of an exception vector number.
  * Uses active core's NVIC state.

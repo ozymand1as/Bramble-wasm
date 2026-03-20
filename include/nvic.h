@@ -139,6 +139,7 @@ uint8_t nvic_get_exception_priority(uint32_t vector_num);
 void systick_init(void);
 void systick_reset(void);
 void systick_tick(uint32_t cycles);
+void systick_tick_for_core(int core_id, uint32_t cycles);
 
 /* Per-core NVIC and SysTick (RP2040 has independent NVIC per core) */
 extern nvic_state_t nvic_states[2];

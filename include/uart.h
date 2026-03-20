@@ -65,6 +65,7 @@ typedef struct {
     uint32_t ris;       /* Raw interrupt status */
     uint32_t dmacr;     /* DMA control */
     int enabled;        /* Derived from CR.UARTEN */
+    uint32_t tx_activity; /* Number of transmitted bytes since reset */
 
     /* RX FIFO */
     uint8_t rx_fifo[UART_RX_FIFO_SIZE];
@@ -88,5 +89,8 @@ int uart_match(uint32_t addr);
 /* Push a byte into the UART RX FIFO (for external input injection).
  * Returns 1 on success, 0 if FIFO is full. */
 int uart_rx_push(int uart_num, uint8_t data);
+
+/* Returns non-zero once firmware has emitted UART TX traffic. */
+int uart_stdio_active(int uart_num);
 
 #endif /* UART_H */

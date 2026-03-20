@@ -495,7 +495,7 @@ TEST(test_cpu_bind_core_context_roundtrip) {
     ASSERT_EQ(17, cores[CORE0].current_irq, "Unbinding should save IRQ state back to the core");
     ASSERT_EQ(0xAAAAAAAA, cpu.r[0], "Global CPU state should be restored after unbind");
     ASSERT_EQ(FLASH_BASE + 0x180, cpu.r[15], "Global PC should be restored after unbind");
-    ASSERT_EQ(CORE1, get_active_core(), "Active core should be restored after unbind");
+    ASSERT_EQ(CORE0, get_active_core(), "Active core should stay on the core that just ran");
     PASS();
 }
 
@@ -729,6 +729,17 @@ TEST(test_busctrl_atomic_aliases) {
 TEST(test_uart_output) {
     reset_cpu();
     mem_write32(UART0_BASE + UART_DR, 'X');
+    PASS();
+}
+
+TEST(test_uart_stdio_activity_tracks_tx) {
+    reset_cpu();
+    ASSERT_EQ(0, uart_stdio_active(0), "UART0 should start with no stdio activity");
+
+    mem_write32(UART0_BASE + UART_CR, UART_CR_UARTEN | UART_CR_TXE);
+    mem_write32(UART0_BASE + UART_DR, 'X');
+
+    ASSERT_EQ(1, uart_stdio_active(0), "UART0 stdio activity should latch after TX");
     PASS();
 }
 
@@ -3758,7 +3769,7 @@ TEST(test_corepool_query_cores_prunes_stale_entries) {
 }
 
 TEST(test_num_active_cores_default) {
-    ASSERT_EQ(MAX_CORES, num_active_cores, "Default should be MAX_CORES (2)");
+    ASSERT_EQ(1, num_active_cores, "Default should favor the stable single-core path");
     PASS();
 }
 
@@ -4114,6 +4125,7 @@ int main(void) {
 
     BEGIN_CATEGORY("UART Peripheral");
     RUN_TEST(test_uart_output);
+    RUN_TEST(test_uart_stdio_activity_tracks_tx);
     RUN_TEST(test_uart_registers);
     RUN_TEST(test_uart_baud_readback);
     RUN_TEST(test_uart1_independent);
