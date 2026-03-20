@@ -258,18 +258,18 @@ void icache_invalidate_all(void) {
  * to JIT_BLOCK_MAX_INSN instructions (~32 cycles worst case).
  * ======================================================================== */
 
-#define JIT_BLOCK_MAX_INSN   64
+#define JIT_BLOCK_MAX_INSN   32
 #define JIT_CACHE_BLOCKS     16384
 #define JIT_CACHE_BMASK      (JIT_CACHE_BLOCKS - 1)
 
 typedef struct {
     uint32_t start_pc;                       /* Block start address (tag) */
     uint16_t instrs[JIT_BLOCK_MAX_INSN];     /* Pre-fetched instructions */
-    thumb_handler_t handlers[JIT_BLOCK_MAX_INSN]; /* Pre-decoded handlers */
-    uint8_t  insn_cycles[JIT_BLOCK_MAX_INSN]; /* Pre-computed cycle costs (non-branch) */
-    int      length;                          /* Number of instructions in block */
-    uint32_t exec_count;                      /* Execution count (profiling) */
-} jit_block_t;
+    uint8_t  length;                         /* Number of instructions in block */
+} __attribute__((packed)) jit_block_t;
+/* ~72 bytes per block, 16384 blocks = ~1.1 MB (fits in L2).
+ * Handlers derived from dispatch_table[instr>>8] (2KB, L1-hot).
+ * Cycle costs derived from timing_lut[instr>>8] (256B, L1-hot). */
 
 static jit_block_t jit_cache[JIT_CACHE_BLOCKS];
 static int jit_enabled = 0;
@@ -281,7 +281,6 @@ void jit_init(void) {
     for (int i = 0; i < JIT_CACHE_BLOCKS; i++) {
         jit_cache[i].start_pc = ICACHE_TAG_EMPTY;
         jit_cache[i].length = 0;
-        jit_cache[i].exec_count = 0;
     }
     jit_enabled = 1;
     jit_block_exec = 0;
@@ -331,7 +330,6 @@ static jit_block_t *jit_compile(uint32_t pc) {
 
     block->start_pc = pc;
     block->length = 0;
-    block->exec_count = 0;
 
     uint32_t cur_pc = pc;
 
@@ -347,12 +345,9 @@ static jit_block_t *jit_compile(uint32_t pc) {
 
         /* 32-bit instruction prefix — stop before it */
         uint8_t top5 = instr >> 11;
-        if (top5 >= 0x1D && i > 0) break;
-        if (top5 >= 0x1D) break;  /* Can't start block with 32-bit */
+        if (top5 >= 0x1D) break;
 
         block->instrs[i] = instr;
-        block->handlers[i] = dispatch_table[instr >> 8];
-        block->insn_cycles[i] = (uint8_t)timing_instruction_cycles(instr, 0);
         block->length++;
 
         /* Terminal instruction ends the block (included as last insn) */
@@ -377,32 +372,50 @@ static jit_block_t *jit_compile(uint32_t pc) {
 static void __attribute__((hot)) jit_execute(jit_block_t *block) {
     uint32_t pc = block->start_pc;
     uint32_t total_cycles = 0;
-    int len = block->length;
+    const int len = block->length;
+    const uint16_t *instrs = block->instrs;
     int i;
 
-    for (i = 0; i < len; i++) {
+    for (i = 0; i < len - 1; i++) {
+        /* Non-terminal instructions: no branch check needed.
+         * We still detect exceptions via cpu.r[15] changing unexpectedly. */
+        const uint16_t instr = instrs[i];
         cpu.r[15] = pc;
-
         pc_updated = 0;
-        block->handlers[i](block->instrs[i]);
 
-        if (pc_updated) {
-            /* Branch or control flow change — use actual branch cost */
-            int branch_taken = (cpu.r[15] != pc + 2);
-            total_cycles += timing_instruction_cycles(block->instrs[i], branch_taken);
-            i++; /* Count this instruction */
-            break;
+        dispatch_table[instr >> 8](instr);
+
+        /* If handler or an exception changed the PC, bail out */
+        if (__builtin_expect(pc_updated || cpu.r[15] != pc, 0)) {
+            total_cycles += timing_instruction_cycles(instr, cpu.r[15] != pc + 2);
+            i++;
+            goto done;
         }
 
-        total_cycles += block->insn_cycles[i];
+        total_cycles += timing_lut[instr >> 8];
         pc += 2;
     }
 
-    /* Batch step_count update */
-    cpu.step_count += (uint32_t)i;
-    cpu.r[15] = pc_updated ? cpu.r[15] : pc;
+    /* Last instruction (always a terminal or block-end): full handling */
+    {
+        const uint16_t instr = instrs[i];
+        cpu.r[15] = pc;
+        pc_updated = 0;
 
-    block->exec_count++;
+        dispatch_table[instr >> 8](instr);
+
+        int branch_taken = pc_updated ? (cpu.r[15] != pc + 2) : 0;
+        uint8_t base_cycles = timing_lut[instr >> 8];
+        total_cycles += base_cycles ? base_cycles
+                      : timing_instruction_cycles(instr, branch_taken);
+        i++;
+
+        if (!pc_updated && cpu.r[15] == pc)
+            cpu.r[15] = pc + 2;
+    }
+
+done:
+    cpu.step_count += (uint32_t)i;
     jit_block_exec++;
     jit_insns_saved += i > 1 ? (uint64_t)(i - 1) : 0;
     timing_tick(total_cycles);
@@ -411,8 +424,7 @@ static void __attribute__((hot)) jit_execute(jit_block_t *block) {
 /* Invalidate JIT blocks containing a specific address (for RAM writes) */
 void jit_invalidate_addr(uint32_t addr) {
     if (!jit_enabled) return;
-    /* For RAM-based code: scan for blocks containing this address.
-     * Flash/ROM blocks are never invalidated (immutable). */
+    /* Only RAM-based code needs invalidation (flash/ROM is immutable) */
     if (addr < RAM_BASE || addr >= RAM_TOP) return;
     for (int i = 0; i < JIT_CACHE_BLOCKS; i++) {
         if (jit_cache[i].start_pc == ICACHE_TAG_EMPTY) continue;
