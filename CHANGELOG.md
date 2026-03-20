@@ -9,12 +9,12 @@
 - Watchdog and `SYSRESETREQ` reboot paths now reinitialize the full runtime peripheral set instead of a partial reset.
 - Core pool registry updates now hold a single lock window for read/modify/write operations.
 - Wire transport now handles partial `SOCK_STREAM` reads and writes safely without desynchronizing frames.
-- `-stdin` now routes host input to a single active guest console: USB CDC when fully active, otherwise UART0.
+- `-stdin` now stages host input until a guest console is ready, preserving littleOS interactive shells while still delivering early piped or interactive input to USB CDC firmware such as MicroPython.
 - Consolidated the old `UPDATES.md` history into this file and refreshed `README.md`, `Bramble_Guide.md`, and `docs/`.
 
 ### Tests
 
-- 260 tests passing, including loader hardening, watchdog reset, core pool, wire transport, and stdin-routing regressions
+- 262 tests passing, including loader hardening, watchdog reset, core pool, wire transport, USB CDC RX readiness, and stdin-routing regressions
 
 ---
 
