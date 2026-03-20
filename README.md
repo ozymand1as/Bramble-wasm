@@ -2,9 +2,9 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.28.0
+## Current Status: post-v0.31.0 main
 
-255 tests passing. Boots and runs Pico SDK firmware including **MicroPython v1.27.0** and **CircuitPython 10.1.3** with USB CDC REPL. Full peripheral emulation, USB host enumeration simulation, flash write-through persistence, SD card and eMMC SPI emulation, UART-to-TCP networking, SPI/I2C device callbacks, multi-instance wiring, and **host-threaded execution** with dynamic core allocation.
+260 tests passing. Boots and runs Pico SDK firmware including **MicroPython v1.27.0**, **CircuitPython 10.1.3**, and **littleOS**, with Pico W/CYW43 support, USB CDC REPL, flash write-through persistence, SD card and eMMC emulation, UART-to-TCP networking, multi-instance wiring, GDB watchpoints, host-threaded execution, a decoded instruction cache, and optional JIT acceleration.
 
 ### Coverage
 
@@ -16,17 +16,19 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 | Boot | Complete | Vector table, boot2 auto-detect, ROM function table, ROM soft-float/double |
 | Exceptions | ~90% | NVIC priority preemption, SysTick, PendSV, SVCall, HardFault, exception nesting |
 | Timing | Cycle-accurate | Configurable clock (`-clock 125`), ARMv6-M instruction costs |
-| Debugging | GDB RSP | Breakpoints, single-step, register/memory access (`-gdb`) |
+| Debugging | GDB RSP | Breakpoints, watchpoints, conditional breakpoints, dual-core threads (`-gdb`) |
 | Flash | Write-through | `-flash <path>` with immediate sync on every write |
 | Storage | SD card + eMMC | SPI-attached file-backed block devices |
-| Tests | 255 | CTest integrated, 50+ categories |
+| WiFi | CYW43 (Pico W) | gSPI-over-PIO emulation with optional TAP bridge (`-wifi`, `-tap`) |
+| Performance | ICache + JIT | 64K decoded cache by default, optional hot-block JIT (`-jit`) |
+| Tests | 260 | CTest integrated, 50+ categories |
 
 ### Peripherals
 
 | Peripheral | Address | Emulation Level |
 |------------|---------|-----------------|
 | GPIO | `0x40014000` / `0xD0000000` | Full (30 pins, SIO, IO_BANK0, PADS, edge/level interrupts) |
-| UART | `0x40034000` / `0x40038000` | Full (dual PL011, Tx+Rx, 16-deep FIFO, stdin polling) |
+| UART | `0x40034000` / `0x40038000` | Full (dual PL011, Tx+Rx, 16-deep FIFO, active-console stdin routing) |
 | SPI | `0x4003C000` / `0x40040000` | Full (dual PL022, 8-deep TX/RX FIFOs, device callbacks) |
 | I2C | `0x40044000` / `0x40048000` | Full (dual DW_apb_i2c, 16-deep RX FIFO, device callbacks) |
 | Timer | `0x40054000` | Full (64-bit counter, 4 alarms, interrupts) |
@@ -49,6 +51,7 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 | ROSC | `0x40060000` | Full (STATUS, RANDOMBIT LFSR, CTRL enable) |
 | RTC | `0x4005C000` | Full (LOAD strobe, calendar rollover, leap year, ticking) |
 | XIP Cache | `0x14000000` | Stub (always ready) + 16KB XIP SRAM |
+| CYW43 | Pico W via PIO/SPI | Functional (scan/connect path, WLAN framing, TAP bridge) |
 
 ### Storage Devices
 
@@ -64,42 +67,40 @@ All peripherals support RP2040 atomic register aliases (SET/CLR/XOR).
 ### Known Limitations
 
 - **Cycle timing**: Default 1 MHz (fast-forward). Use `-clock 125` for real RP2040 timing.
+- **Fidelity tradeoffs**: DMA pacing, very high-speed PIO timing, and non-CDC USB device behavior are still functional models rather than fully cycle-perfect hardware.
 - See [ROADMAP](docs/ROADMAP.md) for detailed status.
 
 ## Building and Running
 
 ### Prerequisites
 
-- GCC cross-compiler: `arm-none-eabi-gcc`
 - CMake 3.10+
-- Python 3 (for UF2 conversion)
 - Standard C library (host)
+- `arm-none-eabi-gcc` and Python 3 if you want to build the sample/test firmware
 
 ### Build the Emulator
 
 ```bash
-cd Bramble
 ./build.sh
 ```
 
 This builds the `bramble` executable in the project root.
 
-### Configure Hardware Mode
-
-Edit `include/emulator.h` to select single-core or dual-core:
-
-```c
-/* For SINGLE-CORE: */
-// #define DUAL_CORE_ENABLED
-
-/* For DUAL-CORE: */
-#define DUAL_CORE_ENABLED
-```
-
-Then rebuild:
+You can also build explicitly with CMake:
 
 ```bash
-make clean && make
+cmake -S . -B build
+cmake --build build -j
+```
+
+### Choose Core Mode
+
+Bramble builds with dual-core support enabled by default. Select the active cores at runtime:
+
+```bash
+./bramble firmware.uf2 -cores 1
+./bramble firmware.uf2 -cores 2
+./bramble firmware.uf2 -cores auto
 ```
 
 ### Build Test Firmware
@@ -163,9 +164,7 @@ printf 'Ada\n' | ./bramble name_prompt.uf2 -stdin
 ### Run Tests
 
 ```bash
-cd build
-cmake .. && make bramble_tests
-ctest --output-on-failure
+ctest --test-dir build --output-on-failure
 ```
 
 ### Debug Modes
@@ -198,12 +197,13 @@ Bramble now supports flexible debug output modes:
 ./bramble firmware.uf2 -debug -debug1   # Both cores debug
 ./bramble firmware.uf2 -status          # Periodic status updates
 ./bramble firmware.uf2 -debug -status   # Debug + status combined
-./bramble firmware.uf2 -stdin           # Enable stdin → UART0 Rx
+./bramble firmware.uf2 -stdin           # Route stdin to USB CDC when active, else UART0
 ./bramble firmware.uf2 -gdb            # Start GDB server on port 3333
 ./bramble firmware.uf2 -gdb 4444       # GDB server on custom port
 ./bramble firmware.uf2 -clock 125      # Real RP2040 timing (125 MHz)
 ./bramble firmware.uf2 -flash fs.bin   # Persistent flash storage
 ./bramble firmware.uf2 -debug-mem      # Log unmapped peripheral access
+./bramble firmware.uf2 -jit            # Enable JIT for hot flash/ROM loops
 ```
 
 **Networking (UART-to-TCP bridge):**
@@ -228,6 +228,16 @@ Bramble now supports flexible debug output modes:
 
 # UART TX on either side arrives as UART RX on the other
 # GPIO pins can also be wired: -wire-gpio /tmp/gpio_link.sock
+```
+
+**WiFi (Pico W / CYW43):**
+
+```bash
+# Basic Pico W/CYW43 emulation
+./bramble firmware.uf2 -wifi
+
+# Bridge emulated WLAN frames to a host TAP interface
+./bramble firmware.uf2 -wifi -tap tap0
 ```
 
 **Storage Devices (SD Card / eMMC):**
@@ -316,9 +326,18 @@ Bramble/
 │   ├── usb.c           # USB controller with host enumeration + CDC bridge
 │   ├── rtc.c           # RTC peripheral (ticking, calendar, leap year)
 │   ├── gdb.c           # GDB remote serial protocol stub
+│   ├── netbridge.c     # UART-to-TCP bridge
+│   ├── wire.c          # Multi-instance Unix socket wiring
 │   ├── storage.c       # Flash write-through persistence
 │   ├── sdcard.c        # SD card SPI emulation (SDHC, file-backed)
-│   └── emmc.c          # eMMC SPI emulation (file-backed)
+│   ├── emmc.c          # eMMC SPI emulation (file-backed)
+│   ├── fatfs.c         # FAT16 helpers for flash/FUSE
+│   ├── fuse_mount.c    # Optional FUSE mount integration
+│   ├── w5500.c         # W5500 Ethernet device model
+│   ├── bme280.c        # BME280 sensor model
+│   ├── corepool.c      # Host-threaded execution + core allocation
+│   ├── cyw43.c         # CYW43 WiFi emulation
+│   └── tapif.c         # TAP bridge for Pico W traffic
 ├── include/
 │   ├── emulator.h      # Core definitions, CPU state, memory layout
 │   ├── instructions.h  # Instruction handler prototypes
@@ -337,11 +356,20 @@ Bramble/
 │   ├── usb.h           # USB controller register definitions
 │   ├── rtc.h           # RTC register definitions
 │   ├── gdb.h           # GDB RSP stub definitions
+│   ├── netbridge.h     # UART network bridge definitions
+│   ├── wire.h          # Multi-instance wire protocol definitions
 │   ├── storage.h       # Flash write-through definitions
 │   ├── sdcard.h        # SD card SPI definitions
-│   └── emmc.h          # eMMC SPI definitions
+│   ├── emmc.h          # eMMC SPI definitions
+│   ├── fatfs.h         # FAT filesystem helpers
+│   ├── fuse_mount.h    # FUSE mount definitions
+│   ├── w5500.h         # W5500 device definitions
+│   ├── bme280.h        # BME280 device definitions
+│   ├── corepool.h      # Core pool definitions
+│   ├── cyw43.h         # CYW43 WiFi definitions
+│   └── tapif.h         # TAP bridge definitions
 ├── tests/
-│   └── test_suite.c    # Unit test suite (237 tests, verbose, CTest integrated)
+│   └── test_suite.c    # Unit test suite (260 tests, verbose, CTest integrated)
 ├── test-firmware/
 │   ├── hello_world.S   # Assembly UART test
 │   ├── gpio_test.S     # Assembly GPIO test
@@ -358,7 +386,6 @@ Bramble/
 ├── CMakeLists.txt      # Build configuration
 ├── build.sh            # Top-level build script
 ├── CHANGELOG.md        # Version history and changes
-├── UPDATES.md          # Detailed per-version update notes
 └── README.md           # This file
 ```
 
@@ -368,7 +395,7 @@ Bramble/
 
 - **64-bit Counter**: Microsecond-resolution time tracking
 - **4 Independent Alarms**: ALARM0-3 with configurable trigger points
-- **Interrupt Generation**: Sets INTR bits when alarms fire (NVIC integration pending)
+- **Interrupt Generation**: Sets INTR bits when alarms fire and signals NVIC IRQ 0-3 when enabled
 - **Write-1-to-Clear**: Standard ARM interrupt acknowledgment
 - **Pause/Resume**: Stop timer for debugging
 - **Atomic Operations**: Armed register shows active alarms
@@ -572,13 +599,13 @@ Helper functions `update_add_flags()` and `update_sub_flags()` ensure consistenc
 
 ### UF2 Loading
 
-The loader validates:
-- Magic numbers (0x0A324655, 0x9E5D5157)
+The UF2 loader validates:
+- Magic numbers (0x0A324655, 0x9E5D5157, 0x0AB16F30)
 - Target address in flash range
-- Payload size (476 bytes standard)
-- Family ID (0xE48BFF56 for RP2040)
+- Payload size bounds (up to 476 bytes per block)
+- Overflow-safe target calculations before writing to flash
 
-Multi-block firmware images are supported with sequential loading.
+Multi-block firmware images are supported with sequential loading, and malformed or out-of-range blocks are rejected without modifying flash.
 
 ### Dual-Core Architecture
 
@@ -600,41 +627,41 @@ typedef struct {
 
 **Spinlock Implementation**:
 ```c
-void spinlock_acquire(uint8_t lock_id) {
-    while (spinlocks[lock_id].locked) {
-        // Spin until lock is released
+uint32_t spinlock_acquire(uint32_t lock_id) {
+    if (spinlocks[lock_id] & SPINLOCK_LOCKED) {
+        return 0;
     }
-    spinlocks[lock_id].locked = 1;
+    spinlocks[lock_id] = SPINLOCK_VALID | SPINLOCK_LOCKED;
+    return 1u << lock_id;
 }
 ```
 
 ## Performance
 
-The emulator executes simple firmware at approximately:
-- **Simple loop**: ~10,000 instructions/second (development build)
-- **UART output**: Limited by `putchar()` overhead
-- **GPIO operations**: Instant (no electrical simulation)
-- **Timer operations**: Lightweight counter increment per cycle
-- **Memory access**: Direct array indexing (no caching overhead)
-- **Dual-core**: Both cores step together (no penalty)
+Bramble now ships with a 64K decoded instruction cache enabled by default and optional JIT basic-block compilation via `-jit`.
 
-The GPIO test executes 2M+ instructions in under 1 second. Performance is adequate for firmware debugging and testing. Optimization (JIT, caching) could achieve 100x improvement but isn't currently needed.
+- **Instruction cache**: Avoids repeat decode/dispatch work for hot Thumb-1 paths.
+- **JIT**: Compiles hot flash/ROM basic blocks and reports execution stats on exit.
+- **Threaded execution**: `-cores 2` and `-cores auto` map emulated cores to host pthreads while preserving a shared-state lock.
+- **I/O behavior**: Firmware output stays on stdout while emulator diagnostics stay on stderr, which keeps pipes and scripted runs predictable.
+
+For benchmarking details, see `tests/benchmark.c`.
 
 ## Future Work
 
-1. **GDB Enhancements**: Watchpoints, Core 1 debugging, conditional breakpoints
-2. **FUSE Mount**: Mount flash filesystem from host for live file access
-3. **Performance**: JIT compilation for hot loops, instruction caching
+1. **Timing fidelity**: DMA pacing, high-speed PIO timing, and more USB edge cases.
+2. **Device breadth**: More SPI/I2C device models and broader Pico W/WLAN coverage.
+3. **Tooling**: More firmware examples, benchmarks, and workflow automation around regression testing.
 
 ## Contributing
 
 The Bramble project is open for contributions! Areas that need help:
 
-1. **Testing**: MicroPython/CircuitPython firmware, edge cases, performance benchmarks
-2. **Debugging**: GDB watchpoints, Core 1 debugging
+1. **Testing**: Firmware coverage, edge cases, and performance benchmarks.
+2. **Device models**: Sensors, networking peripherals, and board-specific integrations.
 3. **Documentation**: Register descriptions, usage examples, architecture guides
 
-Run `ctest` to verify changes don't break existing tests. See [CHANGELOG.md](CHANGELOG.md) for recent updates and [docs/](docs/) for detailed technical documentation.
+Run `ctest --test-dir build --output-on-failure` to verify changes don't break existing tests. See [CHANGELOG.md](CHANGELOG.md) for release history and [docs/](docs/) for detailed technical documentation.
 
 ## License
 
@@ -646,4 +673,4 @@ For issues, questions, or contributions:
 - Open an issue on GitHub
 - Check existing documentation in [docs/](docs/)
 - Review [CHANGELOG.md](CHANGELOG.md) for recent changes
-- See [NVIC Audit Report](docs/NVIC_audit_report.md) for known limitations
+- See [NVIC Audit Report](docs/NVIC_audit_report.md) for historical background on early NVIC issues

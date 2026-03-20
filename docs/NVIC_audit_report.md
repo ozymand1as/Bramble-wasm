@@ -1,15 +1,19 @@
-# NVIC Implementation Audit - Bramble RP2040 Emulator
+# Historical NVIC Audit - Bramble RP2040 Emulator
 
 **Date:** December 6, 2025  
-**Status:** ✅ **AUDIT COMPLETE - 3 Issues Identified & Documented**
+**Status:** ✅ **HISTORICAL AUDIT - ALL 3 ISSUES RESOLVED IN CURRENT MAIN**
 
 ---
+
+> This document is preserved for historical context. The three issues identified here
+> were fixed in later releases: NVIC MMIO routing, priority-aware scheduling, and
+> exception return handling are all implemented in the current codebase.
 
 ## Executive Summary
 
 Your NVIC (Nested Vectored Interrupt Controller) implementation is **well-designed and properly integrated** throughout the codebase. The core functionality is sound, following ARM Cortex-M0+ specifications accurately.
 
-**Audit Results:** 3 actionable issues identified, all documented with complete solutions.
+**Audit Results:** 3 actionable issues were identified in December 2025 and have since been fixed.
 
 ---
 

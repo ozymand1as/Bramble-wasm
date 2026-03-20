@@ -1,5 +1,81 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [Unreleased] - 2026-03-20
+
+### Changed - Maintenance, Hardening, and Documentation Consolidation
+
+- Hardened the UF2 loader against oversized payloads and overflowed flash writes.
+- Hardened ELF `PT_LOAD` handling with overflow-safe bounds checks and `p_filesz <= p_memsz` validation.
+- Watchdog and `SYSRESETREQ` reboot paths now reinitialize the full runtime peripheral set instead of a partial reset.
+- Core pool registry updates now hold a single lock window for read/modify/write operations.
+- Wire transport now handles partial `SOCK_STREAM` reads and writes safely without desynchronizing frames.
+- `-stdin` now routes host input to a single active guest console: USB CDC when fully active, otherwise UART0.
+- Consolidated the old `UPDATES.md` history into this file and refreshed `README.md`, `Bramble_Guide.md`, and `docs/`.
+
+### Tests
+
+- 260 tests passing, including loader hardening, watchdog reset, core pool, wire transport, and stdin-routing regressions
+
+---
+
+## [0.31.0] - 2026-03-13
+
+### Added - Pico W Connectivity and JIT Acceleration
+
+- CYW43 / Pico W emulation with PIO-backed gSPI transport, WLAN framing, and fake scan/connect flows
+- TAP bridge support for moving emulated WLAN Ethernet frames onto a host TAP interface
+- JIT basic-block compilation for hot flash/ROM paths (`-jit`) with execution statistics on exit
+- Benchmark coverage for instruction-cache and JIT performance comparisons
+
+### Files Added
+
+- `include/cyw43.h` + `src/cyw43.c` - CYW43 WiFi emulation
+- `include/tapif.h` + `src/tapif.c` - TAP bridge support
+- `tests/benchmark.c` - Performance benchmark harness
+
+### Files Modified
+
+- `src/main.c` - `-wifi`, `-tap`, and `-jit` CLI handling
+- `src/pio.c` - CYW43 gSPI FIFO interception and auto-detection
+- `src/cpu.c` - JIT block cache and runtime reporting
+- `CMakeLists.txt` - Added WiFi, TAP, and benchmark targets
+
+---
+
+## [0.30.0] - 2026-03-10
+
+### Added - Advanced Debugging and CPU Execution Caching
+
+- GDB write/read/access watchpoints (`Z2`/`Z3`/`Z4`) and conditional breakpoint monitor commands
+- Dual-core GDB thread awareness for register access, stepping, and stop replies
+- 64K decoded instruction cache for hot Thumb-1 dispatch paths
+- ARMv6-M lockup handling for HardFault escalation during HardFault
+
+### Files Modified
+
+- `src/gdb.c` + `include/gdb.h` - Watchpoints, conditional breakpoints, dual-core thread support
+- `src/membus.c` - Read/write watchpoint hooks on memory accesses
+- `src/cpu.c` - Decoded instruction cache and double-fault lockup handling
+
+---
+
+## [0.29.0] - 2026-03-10
+
+### Added - Per-Core Interrupt Behavior and littleOS Compatibility
+
+- Per-core NVIC and SysTick behavior needed for shared interrupt lines on RP2040 dual-core firmware
+- Per-core exception nesting and timer IRQ core-gating fixes
+- littleOS boot and interactive shell support
+
+### Files Modified
+
+- `src/nvic.c` - Per-core interrupt enable and delivery behavior
+- `src/timer.c` - Timer alarm delivery filtered by the active core's NVIC state
+- `src/cpu.c` - Per-core exception bookkeeping
+- `README.md` - Added littleOS coverage notes
+
+---
+
 ## [0.28.0] - 2026-03-09
 
 ### Added - Host-Threaded Execution & Dynamic Core Allocation
@@ -1106,6 +1182,26 @@ Command: `./bramble python/micropython.uf2 -stdin -clock 125 -flash mpy.bin`
 - Shared RAM (0x20040000) partially overlaps Core 1's per-core RAM range
 - No DMA, USB, or PIO emulation
 - Timer uses simplified 1 cycle = 1 microsecond model
+
+---
+
+## [0.4.0] - 2026-03-08
+
+### Fixed - Audit-Driven Correctness and Performance Bugs
+
+- Preserved the xPSR Thumb bit when updating flags.
+- Fixed register-offset `LDR`/`STR`, `ADDS Rd,Rn,Rm` flag handling, `POP` exception return, `ASR #0`, `REV16`, and register `ROR`.
+- Removed Core 1 re-entry resets, FIFO deadlocks, inverted spinlock acquisition, and dual-core peripheral-routing gaps.
+- Fixed instruction counting for halted cores, `WFI` double-PC advance, `SCB_VTOR` readback, and unsafe UF2 alignment-dependent pointer casts.
+- Reduced dual-core per-step copying overhead and removed unconditional timer hot-path printf noise.
+
+### Files Modified
+
+- `src/instructions.c` - ALU, shift, exception return, and decode fixes
+- `src/cpu.c` - Core stepping, FIFO/spinlock behavior, and performance cleanup
+- `src/membus.c` - Dual-core peripheral routing and timer printf cleanup
+- `src/uf2.c` - Safe unaligned field reads
+- `src/nvic.c`, `src/main.c`, `src/timer.c` - Correctness and diagnostics fixes
 
 ---
 

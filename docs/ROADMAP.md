@@ -1,6 +1,6 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.28.0
+## Current State: post-v0.31.0 main
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
@@ -10,10 +10,18 @@
 | Storage | SD card + eMMC | SPI-attached SD (SDHC, CSD v2.0) and eMMC with file-backed images |
 | Exceptions | ~90% | Entry/return, priority preemption, SysTick, PendSV, HardFault, exception nesting |
 | Boot | ~95% | Vector table + SDK boot peripherals + ROM function table + boot2 auto-detect + ROM soft-float/double |
-| Firmware | MicroPython + CircuitPython | MicroPython v1.27.0 REPL + CircuitPython 10.1.3 code.py via USB CDC |
+| Firmware | MicroPython + CircuitPython + littleOS | Interactive MicroPython REPL, CircuitPython `code.py`, and littleOS shell |
 | Networking | UART-to-TCP | Bridge UART to TCP server/client for remote serial access |
 | Multi-Device | Wire protocol | Unix socket IPC for UART/GPIO between Bramble instances |
 | Threading | Host-threaded | pthread-per-core, WFI sleep, dynamic core allocation, multi-instance pool |
+| Validation | 260 tests | Loader hardening, core pool, wire transport, watchdog reset, and console routing coverage |
+
+### Recent Maintenance
+
+- Hardened UF2 and ELF loading against out-of-range and overflowed inputs.
+- Watchdog and `SYSRESETREQ` reboots now reinitialize the full runtime peripheral set.
+- Core pool registry updates and wire transport framing were made safer under contention and partial stream I/O.
+- `-stdin` now routes host input to one active guest console: USB CDC when fully active, otherwise UART0.
 
 ---
 
@@ -303,7 +311,7 @@ on M0+. The original roadmap incorrectly listed these.
 - BUFF_STATUS tracking with W1C, INTR/INTS dynamic computation
 - CDC bulk endpoint detection via configuration descriptor parsing
 - CDC data output: bulk IN endpoint data printed to stdout
-- CDC data input: `usb_cdc_rx_push()` injects stdin bytes into bulk OUT endpoint
+- CDC data input: `usb_cdc_rx_push()` injects stdin bytes into bulk OUT endpoint when USB CDC is the active guest console
 - `usb_step()` called from main loop, advances enumeration and CDC data transfer
 - `stdio_usb_connected()` returns true after full enumeration
 
@@ -390,6 +398,7 @@ on M0+. The original roadmap incorrectly listed these.
 - Unix domain socket IPC; first instance creates, second connects
 - UART TX on one instance delivered as UART RX on the other
 - GPIO pin changes propagated between instances
+- Partial `SOCK_STREAM` reads and writes are buffered correctly
 - Wire message protocol: 4-byte header + payload (UART_DATA, GPIO_PIN, SPI_XFER)
 
 ### 6.5 Future: Device Plugins

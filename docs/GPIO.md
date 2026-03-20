@@ -2,7 +2,7 @@
 
 ## Overview
 
-Bramble now includes comprehensive GPIO (General Purpose Input/Output) emulation for the RP2040's 30 GPIO pins. This enables firmware to configure pins, read/write values, and manage pin functions just like on real hardware.
+Bramble includes comprehensive GPIO emulation for the RP2040's 30 GPIO pins, including SIO fast-path access, IO_BANK0/PADS_BANK0 register state, and NVIC-backed edge/level interrupt generation for processor 0.
 
 ## Implementation Details
 
@@ -25,16 +25,17 @@ Bramble now includes comprehensive GPIO (General Purpose Input/Output) emulation
 - **Interrupt Registers**
   - Raw interrupt status (`INTR`)
   - Interrupt enable/force/status for processor 0
-  - Edge and level detection (stubbed)
+  - Rising/falling edge and high/low level detection
+  - NVIC signaling through `IO_IRQ_BANK0`
+  - `gpio_set_input_pin()` helper for external input injection in tests or device models
 
 #### ⚠️ Partially Implemented
 
-- **Interrupt Generation**: Registers are emulated but interrupts aren't generated to the CPU (requires NVIC)
-- **Edge/Level Detection**: Interrupt types are defined but not actively monitored
+- **Processor 1 GPIO IRQ Registers**: The current model implements the processor 0 interrupt view only
+- **Electrical Pad Nuance**: Slew/drive/input synchronization are functional rather than analog-accurate
 
 #### ❌ Not Yet Implemented
 
-- **Processor 1 Interrupts**: Only PROC0 interrupt registers are implemented
 - **Dormant Wake**: Wake-from-dormant functionality
 - **Input Synchronization**: Real RP2040 synchronizes inputs; emulator reads instantly
 

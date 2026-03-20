@@ -70,9 +70,8 @@ Bramble operates in two execution modes:
 ## 2.2 Building
 
 ```bash
-cd build
-cmake ..
-make
+cmake -S . -B build
+cmake --build build -j
 ```
 
 **Build options:**
@@ -86,11 +85,10 @@ make
 ## 2.3 Running Tests
 
 ```bash
-cd build
-ctest --output-on-failure
+ctest --test-dir build --output-on-failure
 ```
 
-The test suite contains 255+ tests covering instruction execution, peripheral register behavior, memory access, exception handling, and firmware boot sequences.
+The test suite contains 260 tests covering instruction execution, peripheral register behavior, memory access, exception handling, loader hardening, wire transport, and firmware boot sequences.
 
 ## 2.4 Running Firmware
 
@@ -125,7 +123,7 @@ bramble <firmware.uf2|firmware.elf> [options]
 | `-debug1` | | Enable debug output for Core 1 (dual-core only) |
 | `-asm` | | Show assembly instruction tracing (reserved) |
 | `-status` | | Print periodic status updates (PC, SP, FIFO state) |
-| `-stdin` | | Enable stdin polling for UART0 Rx and USB CDC input |
+| `-stdin` | | Route stdin to the active guest console (USB CDC when fully active, otherwise UART0) |
 | `-gdb` | `[port]` | Start GDB RSP server (default port: 3333) |
 | `-clock` | `<MHz>` | Set CPU clock frequency (default: 1, real RP2040: 125) |
 | `-cores` | `<N\|auto>` | Active cores: 1, 2, or auto (queries core pool); enables threading |
@@ -168,6 +166,7 @@ bramble <firmware.uf2|firmware.elf> [options]
 | Flag | Arguments | Description |
 |------|-----------|-------------|
 | `-wifi` | | Enable CYW43439 WiFi chip emulation (Pico W) |
+| `-tap` | `<ifname>` | Bridge CYW43 WLAN traffic to a host TAP interface (implies `-wifi`) |
 
 
 # Part 4: Internal Architecture and Core Modules
@@ -840,12 +839,14 @@ When boot2 is absent or `-no-boot2` is specified:
 ## 6.3 Firmware Loading
 
 **UF2 Format** (uf2.c):
-- Parses UF2 blocks (512 bytes each, 256 bytes payload)
-- Validates magic numbers and block sequence
+- Parses UF2 blocks (512 bytes each, payload up to 476 bytes)
+- Validates all magic numbers, payload bounds, and target range
+- Rejects malformed or overflowed block writes without modifying flash
 - Writes payload to flash at specified target addresses
 
 **ELF Format** (elf.c):
 - Parses ELF32 ARM headers
+- Validates PT_LOAD segment bounds and requires `p_filesz <= p_memsz`
 - Loads PROGBITS segments to their target addresses (flash or RAM)
 - Returns 1 on success, 0 on failure
 
@@ -992,6 +993,7 @@ Mounts the flash FAT16 filesystem as a host directory via libfuse3:
 - First instance creates socket (listen), second connects
 - UART TX on one instance delivered as UART RX on the other
 - GPIO pin changes propagated between instances
+- Stream reads and writes handle partial I/O safely on `SOCK_STREAM`
 - Wire message protocol: 4-byte header (type, channel, length, reserved) + payload
 - Message types: `WIRE_MSG_UART_DATA`, `WIRE_MSG_GPIO_PIN`, `WIRE_MSG_SPI_XFER`
 
@@ -1072,7 +1074,7 @@ CircuitPython 10.1.3 boots and runs `code.py` via USB CDC stdio. First boot crea
 ## 11.3 littleOS
 
 ```bash
-./bramble littleos.uf2 -clock 125 -flash los.bin
+./bramble littleos.uf2 -stdin -clock 125 -flash los.bin
 ```
 
 Full Pico SDK 2.x OS with interactive shell, SageLang interpreter, and dual-core supervisor. Boots to interactive shell. Requires per-core NVIC (timer IRQ filtered by per-core enable mask), per-core exception nesting, timer core-gating.
@@ -1164,13 +1166,13 @@ bramble/
 │   ├── corepool.h          # Core pool definitions
 │   ├── uf2.h               # UF2 format definitions
 │   └── elf.h               # ELF format definitions
-├── tests/                  # 255+ automated tests
+├── tests/                  # 260 automated tests
 ├── docs/
+│   ├── GPIO.md             # GPIO behavior and register notes
+│   ├── NVIC_audit_report.md # Historical NVIC audit (resolved issues)
 │   └── ROADMAP.md          # Development roadmap and feature tracker
 ├── build/                  # Build output directory
-└── .github/
-    └── workflows/
-        └── cmake.yml       # GitHub Actions CI (GCC + Clang)
+└── README.md               # Top-level usage and project overview
 ```
 
 
@@ -1226,13 +1228,13 @@ All peripherals use global state (single emulated chip):
 
 # Part 16: Versioning and Release History
 
-Version source of truth: `MEMORY.md` project memory.
+Version source of truth: `CHANGELOG.md` (including the `Unreleased` section for work on `main`).
 
 | Version | Key Features |
 |---------|-------------|
-| v0.31.0 | ARMv6-M double-fault lockup detection, GitHub Actions CI, JIT ~1.47x speedup |
-| v0.30.0 | GDB watchpoints/dual-core/conditional breakpoints, decoded instruction cache, CYW43 WiFi |
-| v0.29.0 | Per-core NVIC + SysTick, per-core exception nesting, timer core-gating, littleOS boots |
+| v0.31.0 | CYW43/Pico W support, TAP bridge, JIT basic-block compilation, benchmarked speedups |
+| v0.30.0 | GDB watchpoints + conditional breakpoints, dual-core GDB threads, decoded instruction cache, double-fault lockup detection |
+| v0.29.0 | Per-core NVIC + SysTick behavior, per-core exception nesting, timer core-gating, littleOS boots |
 | v0.28.0 | Host-threaded execution (pthread-per-core), `-cores N\|auto`, core pool registry |
 | v0.27.0 | Flash write-through persistence, SD card SPI, eMMC SPI, FAT16 module, FUSE mount |
 | v0.26.0 | UART-to-TCP bridge, SPI FIFOs+device callbacks, I2C FIFO+device callbacks, wire protocol |
@@ -1266,7 +1268,7 @@ Version source of truth: `MEMORY.md` project memory.
 
 Bramble is designed as a practical development tool for the RP2040 ecosystem:
 - add peripheral modules as new firmware requires them
-- validate correctness with automated tests (255+ and growing)
+- validate correctness with automated tests (260 and growing)
 - maintain register-level fidelity against the RP2040 datasheet
 - provide a debuggable environment that boots real firmware unmodified
 
