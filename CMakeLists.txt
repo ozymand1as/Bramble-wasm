@@ -17,7 +17,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -pedantic -g -Wno-stringop-ove
 option(ENABLE_FUSE "Enable FUSE filesystem mount support (requires libfuse3)" OFF)
 
 # Include directories
-include_directories(include)
+include_directories(include include/rp2040 include/rp2350_rv include/rp2350_arm)
 
 # ========================================================================
 # Source files (shared between all targets)
@@ -58,6 +58,7 @@ set(EMU_SOURCES
     src/cyw43.c
     src/tapif.c
     src/devtools.c
+    src/rp2350_rv/rv_cpu.c
 )
 
 # ========================================================================
