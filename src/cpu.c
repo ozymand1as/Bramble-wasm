@@ -1403,9 +1403,6 @@ void cpu_step_core(int core_id) {
     mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
 }
 
-/* Number of instructions each core runs per scheduling quantum in cooperative mode */
-#define DUAL_CORE_QUANTUM 8
-
 void dual_core_step(void) {
     static int current = 0;
 
@@ -1443,13 +1440,10 @@ void dual_core_step(void) {
             cores[c].is_wfi = 0;  /* Wake up */
         }
 
-        /* Batch multiple steps per context switch to amortize save/restore */
+        /* Use bind/unbind to avoid double save/restore overhead of cpu_step_core */
         cpu_bind_context_t ctx;
         if (!cpu_bind_core_context(c, &ctx)) continue;
-        for (int s = 0; s < DUAL_CORE_QUANTUM; s++) {
-            cpu_step();
-            if (cores[c].is_wfi || cpu.r[15] == 0xFFFFFFFF) break;
-        }
+        cpu_step();
         cpu_unbind_core_context(c, &ctx);
     }
 }

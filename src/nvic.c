@@ -226,7 +226,9 @@ void nvic_set_priority(uint32_t irq, uint8_t priority) {
  */
 uint32_t nvic_get_pending_irq(void) {
     nvic_state_t *ns = nvic_cur();
-    uint32_t pending_and_enabled = ns->pending & ns->enable;
+    /* Mask to valid IRQ range (RP2040 has 26 external IRQs, bits 0-25) */
+    uint32_t valid_mask = (1u << NUM_EXTERNAL_IRQS) - 1;
+    uint32_t pending_and_enabled = ns->pending & ns->enable & valid_mask;
 
     if (pending_and_enabled == 0) {
         return 0xFFFFFFFF;
