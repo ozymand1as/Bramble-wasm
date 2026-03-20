@@ -419,12 +419,12 @@ int symbols_load(const char *elf_path) {
 
     /* Read ELF header fields we need */
     fseek(f, 32, SEEK_SET); /* e_shoff */
-    uint32_t e_shoff; fread(&e_shoff, 4, 1, f);
+    uint32_t e_shoff; if (fread(&e_shoff, 4, 1, f) != 1) { fclose(f); return 0; }
     fseek(f, 46, SEEK_SET);
     uint16_t e_shentsize, e_shnum, e_shstrndx;
-    fread(&e_shentsize, 2, 1, f);
-    fread(&e_shnum, 2, 1, f);
-    fread(&e_shstrndx, 2, 1, f);
+    if (fread(&e_shentsize, 2, 1, f) != 1 ||
+        fread(&e_shnum, 2, 1, f) != 1 ||
+        fread(&e_shstrndx, 2, 1, f) != 1) { fclose(f); return 0; }
 
     if (e_shnum == 0 || e_shentsize < 40) { fclose(f); return 0; }
 
@@ -433,7 +433,7 @@ int symbols_load(const char *elf_path) {
     if (!shdrs) { fclose(f); return 0; }
     fseek(f, (long)e_shoff, SEEK_SET);
     for (int i = 0; i < e_shnum; i++) {
-        fread(&shdrs[i], sizeof(elf32_shdr_t), 1, f);
+        if (fread(&shdrs[i], sizeof(elf32_shdr_t), 1, f) != 1) break;
         if (e_shentsize > sizeof(elf32_shdr_t))
             fseek(f, e_shentsize - sizeof(elf32_shdr_t), SEEK_CUR);
     }
@@ -450,7 +450,7 @@ int symbols_load(const char *elf_path) {
         char *strtab = malloc(str_size);
         if (!strtab) continue;
         fseek(f, (long)shdrs[strtab_idx].sh_offset, SEEK_SET);
-        fread(strtab, 1, str_size, f);
+        if (fread(strtab, 1, str_size, f) != str_size) { free(strtab); continue; }
 
         /* Load symbols */
         uint32_t nsyms = shdrs[i].sh_size / sizeof(elf32_sym_t);
@@ -462,7 +462,7 @@ int symbols_load(const char *elf_path) {
 
         for (uint32_t s = 0; s < nsyms; s++) {
             elf32_sym_t sym;
-            fread(&sym, sizeof(sym), 1, f);
+            if (fread(&sym, sizeof(sym), 1, f) != 1) break;
             if ((sym.st_info & 0xF) != STT_FUNC) continue;
             if (sym.st_value == 0) continue;
             if (sym.st_name >= str_size) continue;
@@ -657,8 +657,9 @@ int expect_check(void) {
     fseek(f, 0, SEEK_SET);
 
     char *golden = malloc((size_t)fsize);
-    fread(golden, 1, (size_t)fsize, f);
+    size_t nread = fread(golden, 1, (size_t)fsize, f);
     fclose(f);
+    if ((long)nread != fsize) { free(golden); return 1; }
 
     int match = ((size_t)fsize == expect_capture_len &&
                  memcmp(golden, expect_capture_buf, expect_capture_len) == 0);
