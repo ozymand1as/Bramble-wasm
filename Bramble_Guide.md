@@ -127,6 +127,7 @@ bramble <firmware.uf2|firmware.elf> [options]
 | `-gdb` | `[port]` | Start GDB RSP server (default port: 3333) |
 | `-clock` | `<MHz>` | Set CPU clock frequency (default: 1, real RP2040: 125) |
 | `-cores` | `<N\|auto>` | Active cores: 1, 2, or auto (queries core pool); enables threading |
+| `-thread-quantum` | `<N>` | Guest instructions per threaded lock hold (default: 64, clamped to 1..4096) |
 | `-no-boot2` | | Skip boot2 execution even if detected in firmware |
 | `-debug-mem` | | Log unmapped peripheral read/write accesses to stderr |
 | `-jit` | | Enable JIT basic block compilation for hot loops |

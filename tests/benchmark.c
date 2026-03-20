@@ -269,10 +269,7 @@ int main(void) {
     double raw_best_ms = 0;
     for (int r = 0; r < runs; r++) {
         reset_core();
-        /* cpu_init sets icache, we need to disable it */
-        /* icache_enabled is internal, but not calling icache_init leaves it from cpu_init */
-        /* We can't easily disable icache without modifying code, so skip this test
-         * or accept it's always enabled after cpu_init */
+        icache_enable(0);
         jit_enable(0);
 
         uint64_t t0 = now_ns();
@@ -296,6 +293,7 @@ int main(void) {
     for (int r = 0; r < runs; r++) {
         reset_core();
         icache_init();
+        icache_enable(1);
         jit_enable(0);
 
         uint64_t t0 = now_ns();
@@ -319,6 +317,7 @@ int main(void) {
     for (int r = 0; r < runs; r++) {
         reset_core();
         icache_init();
+        icache_enable(1);
         jit_init();
 
         uint64_t t0 = now_ns();

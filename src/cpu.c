@@ -232,6 +232,14 @@ void icache_init(void) {
     icache_enabled = 1;
 }
 
+void icache_enable(int enable) {
+    icache_enabled = enable ? 1 : 0;
+}
+
+int icache_is_enabled(void) {
+    return icache_enabled;
+}
+
 void icache_invalidate_addr(uint32_t addr) {
     if (!icache_enabled) return;
     uint32_t idx = (addr >> 1) & ICACHE_MASK;

@@ -14,6 +14,7 @@
 - Added end-to-end regression coverage for memory-mapped alias paths including flash XIP aliases, NVIC subword MMIO, XIP SSI, IO_QSPI, PADS_QSPI, and BUSCTRL.
 - Added exception-path regression coverage for SVCall entry/return, IRQ delivery through `cpu_step()`, nested exception unwind, invalid-PC HardFault entry, and double-HardFault lockup.
 - Fixed the remaining `PADS_QSPI` decode overlap so QSPI pad accesses no longer fall through the generic `PADS_BANK0` path.
+- Tightened the CPU hot path with direct ROM/flash/RAM halfword fetches and earlier JIT block dispatch, and added a tunable `-thread-quantum` for host-threaded execution.
 
 ### Tests
 

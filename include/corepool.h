@@ -53,6 +53,7 @@ typedef struct {
     int registered;                 /* Instance registered in pool */
     int auto_cores;                 /* -cores auto requested */
     int host_cpus;                  /* Detected host CPU count */
+    int step_quantum;               /* Guest instructions per lock hold in threaded mode */
 } corepool_state_t;
 
 extern corepool_state_t corepool;
@@ -87,5 +88,8 @@ void corepool_cleanup(void);
 
 /* Detect number of host CPU cores */
 int corepool_detect_host_cpus(void);
+
+/* Configure threaded execution quantum (clamped to a safe range). */
+void corepool_set_step_quantum(int quantum);
 
 #endif /* COREPOOL_H */

@@ -261,6 +261,8 @@ void cpu_exception_return(uint32_t lr_value);
 
 /* Decoded instruction cache */
 void icache_init(void);
+void icache_enable(int enable);
+int icache_is_enabled(void);
 void icache_invalidate_addr(uint32_t addr);
 void icache_invalidate_range(uint32_t addr, uint32_t size);
 void icache_invalidate_all(void);

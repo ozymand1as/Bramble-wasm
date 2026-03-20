@@ -204,6 +204,7 @@ Bramble now supports flexible debug output modes:
 ./bramble firmware.uf2 -flash fs.bin   # Persistent flash storage
 ./bramble firmware.uf2 -debug-mem      # Log unmapped peripheral access
 ./bramble firmware.uf2 -jit            # Enable JIT for hot flash/ROM loops
+./bramble firmware.uf2 -cores 2 -thread-quantum 128  # Tune threaded timeslice
 ```
 
 **Networking (UART-to-TCP bridge):**

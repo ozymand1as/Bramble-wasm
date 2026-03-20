@@ -288,6 +288,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -gdb [port] Start GDB server (default port: %d)\n", GDB_DEFAULT_PORT);
         fprintf(stderr, "  -clock <MHz> Set CPU clock frequency (default: 1, real: 125)\n");
         fprintf(stderr, "  -cores <N|auto> Active cores per instance (1, 2, or auto; default: 2)\n");
+        fprintf(stderr, "  -thread-quantum <N> Guest instructions per threaded timeslice (default: 64)\n");
         fprintf(stderr, "  -no-boot2  Skip boot2 even if detected in firmware\n");
         fprintf(stderr, "  -debug-mem Log unmapped peripheral accesses\n");
         fprintf(stderr, "  -flash <path> Persistent flash storage (2MB file)\n");
@@ -336,6 +337,8 @@ int main(int argc, char **argv) {
     int jit_mode = 0;
     int threaded_mode = 0;   /* Use pthread-per-core execution */
     int cores_auto = 0;     /* -cores auto requested */
+    int thread_quantum = 0;
+    int thread_quantum_set = 0;
     static sdcard_t sdcard;
     static emmc_t emmc_dev;
 
@@ -377,6 +380,11 @@ int main(int argc, char **argv) {
                     }
                     threaded_mode = 1;
                 }
+            }
+        } else if (strcmp(argv[i], "-thread-quantum") == 0) {
+            if (i + 1 < argc) {
+                thread_quantum = atoi(argv[++i]);
+                thread_quantum_set = 1;
             }
         } else if (strcmp(argv[i], "-no-boot2") == 0) {
             no_boot2 = 1;
@@ -478,6 +486,9 @@ int main(int argc, char **argv) {
 
     /* Initialize core pool (detect host CPUs, set up threading) */
     corepool_init();
+    if (thread_quantum_set) {
+        corepool_set_step_quantum(thread_quantum);
+    }
 
     if (cores_auto) {
         num_active_cores = corepool_query_cores();
@@ -678,6 +689,8 @@ int main(int argc, char **argv) {
         /* ====== Threaded execution: one host pthread per emulated core ====== */
         fprintf(stderr, "[CorePool] Host CPUs: %d, emulated cores: %d\n",
                 corepool.host_cpus, num_active_cores);
+        fprintf(stderr, "[CorePool] Thread quantum: %d guest instructions\n",
+                corepool.step_quantum);
 
         corepool_start_threads();
 

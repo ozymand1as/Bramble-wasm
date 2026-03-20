@@ -31,7 +31,9 @@
  * yielding. This cuts mutex/scheduler overhead without changing interrupt
  * checks inside cpu_step_core().
  */
-#define COREPOOL_STEP_QUANTUM 64
+#define COREPOOL_STEP_QUANTUM_DEFAULT 64
+#define COREPOOL_STEP_QUANTUM_MIN     1
+#define COREPOOL_STEP_QUANTUM_MAX     4096
 
 corepool_state_t corepool = {0};
 
@@ -61,7 +63,17 @@ void corepool_init(void) {
     corepool.running = 0;
     corepool.registered = 0;
     corepool.host_cpus = corepool_detect_host_cpus();
+    corepool.step_quantum = COREPOOL_STEP_QUANTUM_DEFAULT;
     memset(corepool.thread_active, 0, sizeof(corepool.thread_active));
+}
+
+void corepool_set_step_quantum(int quantum) {
+    if (quantum < COREPOOL_STEP_QUANTUM_MIN) {
+        quantum = COREPOOL_STEP_QUANTUM_MIN;
+    } else if (quantum > COREPOOL_STEP_QUANTUM_MAX) {
+        quantum = COREPOOL_STEP_QUANTUM_MAX;
+    }
+    corepool.step_quantum = quantum;
 }
 
 /* ========================================================================
@@ -299,7 +311,7 @@ static void *core_thread_fn(void *arg) {
             cores[core_id].is_wfi = 0;
         }
 
-        for (int steps = 0; steps < COREPOOL_STEP_QUANTUM; steps++) {
+        for (int steps = 0; steps < corepool.step_quantum; steps++) {
             if (!corepool.running || cores[core_id].is_halted || cores[core_id].is_wfi) {
                 break;
             }
