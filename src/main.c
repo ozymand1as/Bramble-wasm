@@ -76,8 +76,9 @@ static void uart_stdin_cleanup(void) {
     }
 }
 
-/* Poll stdin and push any available bytes into UART0 RX FIFO and USB CDC.
- * Called periodically from the main execution loop. */
+/* Poll stdin and push any available bytes into the active guest console.
+ * Prefer USB CDC once a bidirectional CDC console is fully enumerated;
+ * otherwise fall back to UART0. */
 static void uart_stdin_poll(void) {
     struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
     if (poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN)) {
@@ -88,8 +89,11 @@ static void uart_stdin_poll(void) {
                 uint8_t ch = buf[i];
                 /* Translate LF→CR: serial devices expect CR as line ending */
                 if (ch == '\n') ch = '\r';
-                uart_rx_push(0, ch);
-                usb_cdc_rx_push(ch);
+                if (usb_cdc_stdout_enabled && usb_cdc_stdio_active()) {
+                    usb_cdc_rx_push(ch);
+                } else {
+                    uart_rx_push(0, ch);
+                }
             }
         }
     }

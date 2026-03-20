@@ -434,6 +434,12 @@ void usb_cdc_rx_push(uint8_t byte) {
     }
 }
 
+int usb_cdc_stdio_active(void) {
+    return usb_state.enum_state == USB_ENUM_ACTIVE &&
+           usb_state.cdc_in_ep != 0 &&
+           usb_state.cdc_out_ep != 0;
+}
+
 /* Drain CDC RX FIFO into the OUT endpoint when firmware has buffer available */
 static void usb_cdc_rx_drain(void) {
     if (usb_state.cdc_rx_count == 0) return;

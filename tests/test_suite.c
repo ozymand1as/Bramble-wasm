@@ -2452,6 +2452,21 @@ TEST(test_usb_main_ctrl_readback) {
     PASS();
 }
 
+TEST(test_usb_cdc_stdio_active_requires_bidirectional_console) {
+    usb_init();
+    ASSERT_EQ(0, usb_cdc_stdio_active(), "CDC stdio should be inactive after reset");
+
+    usb_state.enum_state = USB_ENUM_ACTIVE;
+    ASSERT_EQ(0, usb_cdc_stdio_active(), "CDC stdio should need endpoints");
+
+    usb_state.cdc_in_ep = 2;
+    ASSERT_EQ(0, usb_cdc_stdio_active(), "CDC stdio should need an OUT endpoint");
+
+    usb_state.cdc_out_ep = 2;
+    ASSERT_EQ(1, usb_cdc_stdio_active(), "CDC stdio should be active with both endpoints");
+    PASS();
+}
+
 /* ========================================================================
  * Flash ROM Function Tests
  * ======================================================================== */
@@ -3823,6 +3838,7 @@ int main(void) {
     RUN_TEST(test_usb_dpram_readback);
     RUN_TEST(test_usb_sie_status_disconnected);
     RUN_TEST(test_usb_main_ctrl_readback);
+    RUN_TEST(test_usb_cdc_stdio_active_requires_bidirectional_console);
     END_CATEGORY("USB Controller");
 
     BEGIN_CATEGORY("Flash ROM Functions");
