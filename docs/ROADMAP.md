@@ -21,9 +21,11 @@
 
 ### Recent Changes (v0.37.0)
 
-- **RP2350 RISC-V Hazard3 engine**: RV32I (37 instructions) + M extension (8 instructions) with CSRs, trap handling, dual hart. Multi-architecture directory structure (`src/rp2350_rv/`).
-- **Complete ARMv6-M exception model**: Tail-chaining, late-arriving interrupts, FAULTMASK register.
-- **VREG_AND_CHIP_RESET full registers**: Replaces stub with VREG/BOD/CHIP_RESET.
+- **RP2350 Hazard3 RV32IMAC complete**: All 93 instructions (I+M+A+C+Zicsr), CSRs, traps, LR/SC atomics, dual hart.
+- **`-arch rv32` flag**: Runtime ISA selection — execution loop, banner, and memory map adapt to selected architecture.
+- **RP2350 memory map**: 520KB SRAM, 16MB flash, new peripheral addresses (HSTX, TRNG, SHA-256, OTP, TICKS).
+- **RP2350 peripheral stubs**: TRNG (xorshift), SHA-256, OTP (blank), HSTX, TICKS wired into membus.
+- **Complete ARMv6-M exception model**: Tail-chaining, late-arriving, FAULTMASK, VREG full registers.
 
 ### Previous (v0.36.0)
 

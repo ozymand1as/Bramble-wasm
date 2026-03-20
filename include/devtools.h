@@ -487,6 +487,43 @@ static inline void mem_heatmap_record_write(uint32_t addr) {
 }
 
 /* ========================================================================
+ * RP2350-Specific Peripheral Stubs
+ * ======================================================================== */
+
+/* TRNG (True Random Number Generator) — returns random data */
+#define TRNG_BASE   0x400F0000
+#define TRNG_SIZE   0x10
+int  trng_match(uint32_t addr);
+uint32_t trng_read(uint32_t offset);
+
+/* SHA-256 accelerator — stub (returns zeros, accepts writes) */
+#define SHA256_BASE 0x400F8000
+#define SHA256_SIZE 0x20
+int  sha256_match(uint32_t addr);
+uint32_t sha256_read(uint32_t offset);
+void sha256_write(uint32_t offset, uint32_t val);
+
+/* OTP (One-Time Programmable) — stub returning blank state */
+#define OTP_BASE    0x40120000
+#define OTP_SIZE    0x200
+int  otp_match(uint32_t addr);
+uint32_t otp_read(uint32_t offset);
+
+/* HSTX (High-Speed TX for DVI) — stub */
+#define HSTX_BASE   0x400C0000
+#define HSTX_SIZE   0x20
+int  hstx_match(uint32_t addr);
+uint32_t hstx_read(uint32_t offset);
+void hstx_write(uint32_t offset, uint32_t val);
+
+/* TICKS — tick generator stub */
+#define TICKS_BASE  0x40108000
+#define TICKS_SIZE  0x20
+int  ticks_match(uint32_t addr);
+uint32_t ticks_read(uint32_t offset);
+void ticks_write(uint32_t offset, uint32_t val);
+
+/* ========================================================================
  * VREG_AND_CHIP_RESET Peripheral (0x40064000)
  *
  * RP2040 voltage regulator and chip reset control.

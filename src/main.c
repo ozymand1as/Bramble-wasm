@@ -22,6 +22,11 @@
 #include <termios.h>
 #include <errno.h>
 #include "devtools.h"
+#include "rp2350_rv/rv_cpu.h"
+#include "rp2350_rv/rp2350_memmap.h"
+
+/* Architecture selection */
+typedef enum { ARCH_M0PLUS, ARCH_RV32 } arch_t;
 
 #include "emulator.h"
 #include "gpio.h"
@@ -305,6 +310,10 @@ static void reboot_from_watchdog(const char *tap_name,
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <firmware.uf2> [options]\n", argv[0]);
+        fprintf(stderr, "\nArchitecture:\n");
+        fprintf(stderr, "  -arch <m0+|rv32>    CPU architecture (default: m0+ for RP2040)\n");
+        fprintf(stderr, "                      m0+  = ARM Cortex-M0+ (RP2040)\n");
+        fprintf(stderr, "                      rv32 = RISC-V Hazard3 RV32IMAC (RP2350)\n");
         fprintf(stderr, "\nOptions:\n");
         fprintf(stderr, "  -debug     Enable debug output (single-core) or Core 0 (dual-core)\n");
         fprintf(stderr, "  -debug1    Enable debug output for Core 1 (dual-core only)\n");
@@ -399,6 +408,7 @@ int main(int argc, char **argv) {
     char *gpio_trace_path = NULL;
     char *profile_path = NULL;
     char *mem_heatmap_path = NULL;
+    arch_t arch = ARCH_M0PLUS;
     int threaded_mode = 0;   /* Use pthread-per-core execution */
     int cores_auto = 0;     /* -cores auto requested */
     int thread_quantum = 0;
@@ -543,6 +553,18 @@ int main(int argc, char **argv) {
             if (i + 1 < argc) {
                 tap_name = argv[++i];
                 cyw43.enabled = 1;  /* -tap implies -wifi */
+            }
+        } else if (strcmp(argv[i], "-arch") == 0) {
+            if (i + 1 < argc) {
+                i++;
+                if (strcmp(argv[i], "rv32") == 0 || strcmp(argv[i], "riscv") == 0) {
+                    arch = ARCH_RV32;
+                } else if (strcmp(argv[i], "m0+") == 0 || strcmp(argv[i], "arm") == 0) {
+                    arch = ARCH_M0PLUS;
+                } else {
+                    fprintf(stderr, "[Error] Unknown architecture: %s (use m0+ or rv32)\n", argv[i]);
+                    return EXIT_FAILURE;
+                }
             }
         } else if (strcmp(argv[i], "-jit") == 0) {
             jit_mode = 1;
@@ -689,9 +711,13 @@ int main(int argc, char **argv) {
     }
 
     fprintf(stderr,"\n╔════════════════════════════════════════════════════════════╗\n");
-    fprintf(stderr,"║       Bramble RP2040 Emulator - %s Mode%s          ║\n",
-            num_active_cores == 1 ? "Single-Core" : "Dual-Core",
-            threaded_mode ? " (threaded)" : "          ");
+    if (arch == ARCH_RV32) {
+        fprintf(stderr,"║    Bramble RP2350 Emulator - Hazard3 RV32IMAC              ║\n");
+    } else {
+        fprintf(stderr,"║    Bramble RP2040 Emulator - %s Mode%s          ║\n",
+                num_active_cores == 1 ? "Single-Core" : "Dual-Core",
+                threaded_mode ? " (threaded)" : "          ");
+    }
     fprintf(stderr,"╚════════════════════════════════════════════════════════════╝\n\n");
 
 
@@ -979,7 +1005,56 @@ skip_fuse:
     uint32_t instruction_count = 0;
     uint32_t step_count = 0;
 
-    if (threaded_mode && !gdb_enabled) {
+    if (arch == ARCH_RV32) {
+        /* ====== RISC-V Hazard3 execution ====== */
+        static rv_cpu_state_t rv_cores[2];
+
+        rv_cpu_init(&rv_cores[0], 0);
+        rv_cpu_init(&rv_cores[1], 1);
+
+        /* Load entry point from flash vector table or ELF entry */
+        uint32_t rv_entry = FLASH_BASE;  /* Default: flash base */
+        /* Check for valid RISC-V entry: read reset vector from beginning of flash */
+        uint32_t first_word;
+        memcpy(&first_word, &cpu.flash[0], 4);
+        if (first_word != 0xFFFFFFFF && first_word != 0x00000000) {
+            rv_entry = FLASH_BASE;  /* Boot from flash start */
+        }
+
+        rv_cpu_reset(&rv_cores[0], rv_entry);
+        /* Core 1 stays halted until launched by firmware */
+
+        fprintf(stderr, "[RV] Hazard3 Core 0 starting at PC=0x%08X\n", rv_entry);
+        fprintf(stderr, "[RV] SRAM: %uKB, Flash: %uKB\n",
+                RP2350_SRAM_SIZE / 1024, FLASH_SIZE / 1024);
+
+        while (!rv_cpu_is_halted(&rv_cores[0])) {
+            rv_cpu_step(&rv_cores[0]);
+            step_count++;
+
+            /* Poll stdin and peripherals periodically */
+            if (stdin_enabled && (step_count & 0x3FF) == 0)
+                uart_stdin_poll();
+            if ((step_count & 0x3FF) == 0) {
+                net_bridge_poll();
+                wire_poll();
+            }
+
+            /* Timeout and semihosting */
+            if (timeout_expired || semihost_exit_requested) break;
+
+            /* Safety limit */
+            if (!stdin_enabled && step_count > 1000000000) {
+                fprintf(stderr, "[Warning] Instruction limit reached (1B)\n");
+                break;
+            }
+        }
+
+        instruction_count = rv_cores[0].step_count;
+        fprintf(stderr, "\n[RV] Core 0: PC=0x%08X, %u instructions executed\n",
+                rv_cores[0].pc, rv_cores[0].step_count);
+
+    } else if (threaded_mode && !gdb_enabled) {
         /* ====== Threaded execution: one host pthread per emulated core ====== */
         fprintf(stderr, "[CorePool] Host CPUs: %d, emulated cores: %d\n",
                 corepool.host_cpus, num_active_cores);

@@ -4,7 +4,7 @@ A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, sup
 
 ## Current Status: v0.37.0
 
-276 tests passing (zero warnings). **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Phase 2 — RV32I + M extension engine with CSRs and trap handling. Full peripheral sharing via unified memory bus.
+276 tests passing (zero warnings). **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: ISA complete (RV32IMAC) with `-arch rv32` flag, 520KB SRAM, RP2350 peripheral stubs (TRNG, SHA-256, OTP, HSTX, TICKS). Full peripheral sharing via unified memory bus.
 
 ### Coverage
 

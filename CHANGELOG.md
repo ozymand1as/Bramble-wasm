@@ -9,6 +9,10 @@
 - **RV32M extension**: MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU with correct edge cases (div-by-zero returns 0xFFFFFFFF, INT_MIN/-1 wraps).
 - **RV32C compressed extension**: Full 16-bit compressed instruction set — C.LW, C.SW, C.LWSP, C.SWSP, C.ADDI, C.LI, C.LUI, C.ADDI16SP, C.SRLI, C.SRAI, C.ANDI, C.SUB, C.XOR, C.OR, C.AND, C.J, C.JAL, C.JR, C.JALR, C.BEQZ, C.BNEZ, C.SLLI, C.MV, C.ADD, C.ADDI4SPN, C.EBREAK, C.NOP. All three quadrants (Q0/Q1/Q2) decoded.
 - **RV32A atomic extension**: LR.W (load-reserved), SC.W (store-conditional), AMOSWAP.W, AMOADD.W, AMOAND.W, AMOOR.W, AMOXOR.W, AMOMIN.W, AMOMAX.W, AMOMINU.W, AMOMAXU.W. Reservation tracking with per-hart valid/address state.
+- **`-arch` flag**: Runtime ISA selection — `-arch m0+` (default, RP2040 ARM) or `-arch rv32` (RP2350 Hazard3 RISC-V). Banner and execution loop adapt to selected architecture.
+- **RP2350 memory map**: 520KB SRAM, up to 16MB flash, new peripheral addresses defined in `rp2350_memmap.h`.
+- **RP2350 peripheral stubs**: TRNG (xorshift random), SHA-256, OTP (blank), HSTX, TICKS — wired into membus for read/write access.
+- **RISC-V execution loop**: Single-hart cooperative loop in `main.c` with stdin polling, timeout, and semihosting support.
 - **RISC-V CSR support**: CSRRW/CSRRS/CSRRC + immediate variants. Tracks mstatus, misa, mie, mip, mtvec, mepc, mcause, mtval, mscratch, mhartid, mcycle, minstret.
 - **RISC-V trap handling**: Direct + vectored mtvec modes, MIE/MPIE/MPP save/restore, MRET instruction, alignment fault traps.
 - **Exception tail-chaining**: On exception return, checks for pending higher-priority exceptions and skips unstack/restack (ARMv6-M optimization).

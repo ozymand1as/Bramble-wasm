@@ -1188,3 +1188,91 @@ void vreg_write(uint32_t offset, uint32_t val) {
             vreg_regs[0] |= (1u << 12);
     }
 }
+
+/* ========================================================================
+ * RP2350 Peripheral Stubs
+ * ======================================================================== */
+
+/* TRNG: returns random data via xorshift32 */
+static uint32_t trng_lfsr = 0xDEADBEEF;
+
+int trng_match(uint32_t addr) {
+    uint32_t base = addr & ~0x3000u;
+    return (base >= TRNG_BASE && base < TRNG_BASE + TRNG_SIZE);
+}
+
+uint32_t trng_read(uint32_t offset) {
+    (void)offset;
+    trng_lfsr ^= trng_lfsr << 13;
+    trng_lfsr ^= trng_lfsr >> 17;
+    trng_lfsr ^= trng_lfsr << 5;
+    return trng_lfsr;
+}
+
+/* SHA-256: stub — accepts writes, returns zeros */
+static uint32_t sha256_regs[SHA256_SIZE / 4];
+
+int sha256_match(uint32_t addr) {
+    uint32_t base = addr & ~0x3000u;
+    return (base >= SHA256_BASE && base < SHA256_BASE + SHA256_SIZE);
+}
+
+uint32_t sha256_read(uint32_t offset) {
+    offset &= 0xFFF;
+    if (offset >= SHA256_SIZE) return 0;
+    return sha256_regs[offset / 4];
+}
+
+void sha256_write(uint32_t offset, uint32_t val) {
+    offset &= 0xFFF;
+    if (offset < SHA256_SIZE) sha256_regs[offset / 4] = val;
+}
+
+/* OTP: returns 0xFFFFFFFF (unprogrammed) */
+int otp_match(uint32_t addr) {
+    uint32_t base = addr & ~0x3000u;
+    return (base >= OTP_BASE && base < OTP_BASE + OTP_SIZE);
+}
+
+uint32_t otp_read(uint32_t offset) {
+    (void)offset;
+    return 0xFFFFFFFF;  /* Blank/unprogrammed */
+}
+
+/* HSTX: stub — accepts writes, returns status ready */
+static uint32_t hstx_regs[HSTX_SIZE / 4];
+
+int hstx_match(uint32_t addr) {
+    uint32_t base = addr & ~0x3000u;
+    return (base >= HSTX_BASE && base < HSTX_BASE + HSTX_SIZE);
+}
+
+uint32_t hstx_read(uint32_t offset) {
+    offset &= 0xFFF;
+    if (offset >= HSTX_SIZE) return 0;
+    return hstx_regs[offset / 4];
+}
+
+void hstx_write(uint32_t offset, uint32_t val) {
+    offset &= 0xFFF;
+    if (offset < HSTX_SIZE) hstx_regs[offset / 4] = val;
+}
+
+/* TICKS: stub — tick generator returns configured values */
+static uint32_t ticks_regs[TICKS_SIZE / 4];
+
+int ticks_match(uint32_t addr) {
+    uint32_t base = addr & ~0x3000u;
+    return (base >= TICKS_BASE && base < TICKS_BASE + TICKS_SIZE);
+}
+
+uint32_t ticks_read(uint32_t offset) {
+    offset &= 0xFFF;
+    if (offset >= TICKS_SIZE) return 0;
+    return ticks_regs[offset / 4];
+}
+
+void ticks_write(uint32_t offset, uint32_t val) {
+    offset &= 0xFFF;
+    if (offset < TICKS_SIZE) ticks_regs[offset / 4] = val;
+}

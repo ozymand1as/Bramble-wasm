@@ -1319,6 +1319,11 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
+    /* RP2350-specific peripherals */
+    if (sha256_match(addr)) { sha256_write(addr & 0xFFF, val); return; }
+    if (hstx_match(addr)) { hstx_write(addr & 0xFFF, val); return; }
+    if (ticks_match(addr)) { ticks_write(addr & 0xFFF, val); return; }
+
     /* Stub out other peripheral writes for now. */
     if (addr >= 0x40000000 && addr < 0x50000000) {
         if (mem_debug_unmapped)
@@ -1642,6 +1647,13 @@ uint32_t mem_read32(uint32_t addr) {
     if (tbman_match(addr)) {
         return tbman_read(addr & 0xFFF);
     }
+
+    /* RP2350-specific peripherals */
+    if (trng_match(addr)) return trng_read(addr & 0xFFF);
+    if (sha256_match(addr)) return sha256_read(addr & 0xFFF);
+    if (otp_match(addr)) return otp_read(addr & 0xFFF);
+    if (hstx_match(addr)) return hstx_read(addr & 0xFFF);
+    if (ticks_match(addr)) return ticks_read(addr & 0xFFF);
 
     /* Stub peripheral reads: return 0 for now. */
     if (addr >= SIO_BASE && addr < SIO_BASE + 0x1000) {
