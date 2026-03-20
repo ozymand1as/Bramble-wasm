@@ -110,12 +110,16 @@ static int category_failed = 0;
 /* Reset CPU state to clean baseline */
 static void reset_cpu(void) {
     memset(&cpu, 0, sizeof(cpu));
+    memset(&cores, 0, sizeof(cores));
     cpu.xpsr = 0x01000000; /* Thumb bit set */
     cpu.primask = 0;
     cpu.current_irq = 0xFFFFFFFF;
     cpu.r[13] = RAM_BASE + RAM_SIZE - 0x100; /* SP near top of RAM */
     cpu.r[15] = FLASH_BASE + 0x100;          /* PC in flash */
     cpu.vtor = FLASH_BASE + 0x100;
+    num_active_cores = MAX_CORES;
+    set_active_core(CORE0);
+    watchdog_reboot_pending = 0;
     mem_set_ram_ptr(cpu.ram, RAM_BASE, RAM_SIZE);
     nvic_reset();
     timer_reset();
@@ -180,6 +184,17 @@ static void cleanup_corepool_test_registry(void) {
     unsetenv(COREPOOL_REGISTRY_ENV);
 }
 
+static void install_vector_handler(uint32_t vector_num, uint32_t handler_addr) {
+    uint32_t handler_thumb = handler_addr | 1u;
+    uint32_t offset = (cpu.vtor - FLASH_BASE) + vector_num * 4u;
+    memcpy(&cpu.flash[offset], &handler_thumb, sizeof(handler_thumb));
+}
+
+#define TEST_IO_QSPI_BASE     0x40018000u
+#define TEST_PADS_QSPI_BASE   0x40020000u
+#define TEST_BUSCTRL_BASE     0x40030000u
+#define TEST_XIP_SSI_BAUDR    (XIP_SSI_BASE + 0x14u)
+
 /* ========================================================================
  * PRIMASK Tests (CPSID / CPSIE)
  * ======================================================================== */
@@ -227,7 +242,22 @@ TEST(test_primask_allows_interrupts_when_clear) {
 
 TEST(test_svc_triggers_exception) {
     reset_cpu();
-    ASSERT_EQ(0xFFFFFFFF, cpu.current_irq, "No active IRQ initially");
+    uint32_t handler_addr = FLASH_BASE + 0x240;
+    uint32_t saved_pc = cpu.r[15];
+    uint32_t saved_xpsr = cpu.xpsr;
+
+    install_vector_handler(EXC_SVCALL, handler_addr);
+    instr_svc(0xDF7F);
+
+    ASSERT_EQ(EXC_SVCALL, cpu.current_irq, "SVCall should become the active exception");
+    ASSERT_EQ(handler_addr, cpu.r[15], "PC should jump to the SVCall handler");
+    ASSERT_EQ(0xFFFFFFF9, cpu.r[14], "LR should contain EXC_RETURN");
+    ASSERT_EQ(EXC_SVCALL, cpu.xpsr & 0x3F, "IPSR should reflect SVCall");
+
+    cpu_exception_return(0xFFFFFFF9);
+    ASSERT_EQ(saved_pc + 2, cpu.r[15], "SVC should return to the next instruction");
+    ASSERT_EQ(saved_xpsr, cpu.xpsr, "xPSR should be restored after SVCall return");
+    ASSERT_EQ(0xFFFFFFFF, cpu.current_irq, "No active IRQ after SVCall return");
     PASS();
 }
 
@@ -581,6 +611,87 @@ TEST(test_ram_read_write) {
     PASS();
 }
 
+TEST(test_flash_alias_writes_ignored) {
+    reset_cpu();
+    uint32_t initial = 0x11223344;
+    memcpy(&cpu.flash[0], &initial, sizeof(initial));
+
+    mem_write32(XIP_NOALLOC_BASE, 0xAABBCCDD);
+    mem_write16(XIP_NOCACHE_BASE + 2, 0xEEFF);
+    mem_write8(XIP_NOCACHE_NOALLOC + 1, 0x99);
+
+    ASSERT_EQ(initial, mem_read32(FLASH_BASE), "Flash aliases should ignore writes");
+    PASS();
+}
+
+TEST(test_nvic_memory_map_subword_access) {
+    reset_cpu();
+    mem_write8(NVIC_IPR + 1, 0xC0);
+    mem_write16(NVIC_IPR + 2, 0x4080);
+
+    ASSERT_EQ(0xC0, mem_read8(NVIC_IPR + 1), "Byte writes should reach NVIC IPR");
+    ASSERT_EQ(0x4080, mem_read16(NVIC_IPR + 2), "Halfword writes should reach NVIC IPR");
+    ASSERT_EQ(0xC0, nvic_states[0].priority[1], "IRQ1 priority should reflect byte write");
+    ASSERT_EQ(0x80, nvic_states[0].priority[2], "IRQ2 priority should reflect halfword write");
+    ASSERT_EQ(0x40, nvic_states[0].priority[3], "IRQ3 priority should reflect halfword write");
+    PASS();
+}
+
+TEST(test_xip_ssi_atomic_aliases) {
+    reset_cpu();
+    mem_write32(TEST_XIP_SSI_BAUDR, 0x0004);
+    ASSERT_EQ(0x0004, mem_read32(TEST_XIP_SSI_BAUDR), "XIP SSI BAUDR write/read");
+
+    mem_write32(TEST_XIP_SSI_BAUDR + 0x2000, 0x0001);
+    ASSERT_EQ(0x0005, mem_read32(TEST_XIP_SSI_BAUDR), "SET alias should OR into BAUDR");
+
+    mem_write32(TEST_XIP_SSI_BAUDR + 0x3000, 0x0004);
+    ASSERT_EQ(0x0001, mem_read32(TEST_XIP_SSI_BAUDR), "CLR alias should clear BAUDR bits");
+
+    mem_write32(TEST_XIP_SSI_BAUDR + 0x1000, 0x0003);
+    ASSERT_EQ(0x0002, mem_read32(TEST_XIP_SSI_BAUDR), "XOR alias should toggle BAUDR bits");
+    PASS();
+}
+
+TEST(test_io_qspi_atomic_aliases) {
+    reset_cpu();
+    const uint32_t ctrl = TEST_IO_QSPI_BASE + 0x04;
+
+    mem_write32(ctrl, 0x00000001);
+    mem_write32(ctrl + 0x2000, 0x00000004);
+    mem_write32(ctrl + 0x3000, 0x00000001);
+    mem_write32(ctrl + 0x1000, 0x00000006);
+
+    ASSERT_EQ(0x00000002, mem_read32(ctrl), "IO_QSPI aliases should update the underlying CTRL register");
+    PASS();
+}
+
+TEST(test_pads_qspi_atomic_aliases) {
+    reset_cpu();
+    const uint32_t pad = TEST_PADS_QSPI_BASE + 0x04;
+
+    mem_write32(pad, 0x00000003);
+    mem_write32(pad + 0x2000, 0x00000008);
+    mem_write32(pad + 0x3000, 0x00000002);
+    mem_write32(pad + 0x1000, 0x00000009);
+
+    ASSERT_EQ(0x00000000, mem_read32(pad), "PADS_QSPI aliases should update the underlying pad register");
+    PASS();
+}
+
+TEST(test_busctrl_atomic_aliases) {
+    reset_cpu();
+    mem_write32(TEST_BUSCTRL_BASE, 0x1111);
+    ASSERT_EQ(0x1111, mem_read32(TEST_BUSCTRL_BASE), "BUSCTRL bus priority write/read");
+
+    mem_write32(TEST_BUSCTRL_BASE + 0x3000, 0x0010);
+    ASSERT_EQ(0x1101, mem_read32(TEST_BUSCTRL_BASE), "BUSCTRL CLR alias should clear priority bits");
+
+    mem_write32(TEST_BUSCTRL_BASE + 0x1000, 0x0100);
+    ASSERT_EQ(0x1001, mem_read32(TEST_BUSCTRL_BASE), "BUSCTRL XOR alias should toggle priority bits");
+    PASS();
+}
+
 TEST(test_uart_output) {
     reset_cpu();
     mem_write32(UART0_BASE + UART_DR, 'X');
@@ -783,15 +894,37 @@ TEST(test_nvic_exception_priority_lookup) {
 
 TEST(test_scb_shpr_registers) {
     reset_cpu();
-    nvic_write_register(SCB_SHPR3, 0xC0C00000);
-    ASSERT_EQ(0xC0C00000, nvic_read_register(SCB_SHPR3), "SHPR3 read back");
+    mem_write32(SCB_SHPR3, 0xC0C00000);
+    ASSERT_EQ(0xC0C00000, mem_read32(SCB_SHPR3), "SHPR3 should be readable through the memory bus");
     PASS();
 }
 
 TEST(test_scb_vtor_write) {
     reset_cpu();
-    nvic_write_register(SCB_VTOR, 0x10000200);
+    mem_write32(SCB_VTOR, 0x10000200);
     ASSERT_EQ(0x10000200, cpu.vtor, "VTOR updated");
+    PASS();
+}
+
+TEST(test_scb_icsr_memory_map_pending_bits) {
+    reset_cpu();
+    mem_write32(SCB_ICSR, ICSR_PENDSVSET | ICSR_PENDSTSET);
+    ASSERT_TRUE(mem_read32(SCB_ICSR) & ICSR_PENDSVSET, "ICSR should report PendSV pending");
+    ASSERT_TRUE(mem_read32(SCB_ICSR) & ICSR_PENDSTSET, "ICSR should report SysTick pending");
+
+    mem_write32(SCB_ICSR, ICSR_PENDSVCLR | ICSR_PENDSTCLR);
+    ASSERT_TRUE((mem_read32(SCB_ICSR) & ICSR_PENDSVSET) == 0, "PendSV clear should route through ICSR");
+    ASSERT_TRUE((mem_read32(SCB_ICSR) & ICSR_PENDSTSET) == 0, "SysTick clear should route through ICSR");
+    PASS();
+}
+
+TEST(test_scb_aircr_sysresetreq_requires_key) {
+    reset_cpu();
+    mem_write32(SCB_AIRCR, 1u << 2);
+    ASSERT_EQ(0, watchdog_reboot_pending, "SYSRESETREQ should ignore writes without VECTKEY");
+
+    mem_write32(SCB_AIRCR, 0x05FA0004);
+    ASSERT_EQ(1, watchdog_reboot_pending, "SYSRESETREQ should assert reboot when keyed");
     PASS();
 }
 
@@ -2212,13 +2345,12 @@ TEST(test_muls_zero) {
 TEST(test_exception_entry_return) {
     reset_cpu();
     uint32_t handler_addr = FLASH_BASE + 0x200;
-    uint32_t handler_thumb = handler_addr | 1;
-    memcpy(&cpu.flash[0x100 + 16 * 4], &handler_thumb, 4);
     uint32_t saved_pc = cpu.r[15];
     uint32_t saved_sp = cpu.r[13];
     cpu.r[0] = 0xAAAAAAAA; cpu.r[1] = 0xBBBBBBBB;
     uint32_t saved_r0 = cpu.r[0], saved_r1 = cpu.r[1];
     uint32_t saved_xpsr = cpu.xpsr;
+    install_vector_handler(16, handler_addr);
     cpu_exception_entry(16);
     ASSERT_EQ(handler_addr, cpu.r[15], "PC at handler");
     ASSERT_EQ(0xFFFFFFF9, cpu.r[14], "LR = EXC_RETURN");
@@ -2229,6 +2361,76 @@ TEST(test_exception_entry_return) {
     ASSERT_EQ(saved_r1, cpu.r[1], "R1 restored");
     ASSERT_EQ(saved_xpsr, cpu.xpsr, "xPSR restored");
     ASSERT_EQ(0xFFFFFFFF, cpu.current_irq, "No active IRQ");
+    PASS();
+}
+
+TEST(test_cpu_step_delivers_pending_external_irq) {
+    reset_cpu();
+    uint32_t handler_addr = FLASH_BASE + 0x220;
+
+    install_vector_handler(16, handler_addr);
+    nvic_enable_irq(0);
+    nvic_set_pending(0);
+
+    cpu_step();
+
+    ASSERT_EQ(16, cpu.current_irq, "IRQ0 should enter exception 16");
+    ASSERT_EQ(handler_addr, cpu.r[15], "PC should jump to the IRQ handler");
+    ASSERT_TRUE(nvic_states[0].iabr & 0x1, "IABR bit should be set for the active IRQ");
+
+    cpu_exception_return(0xFFFFFFF9);
+    ASSERT_EQ(0, nvic_states[0].iabr, "IABR bit should clear after returning");
+    PASS();
+}
+
+TEST(test_exception_nesting_restores_previous_exception) {
+    reset_cpu();
+
+    install_vector_handler(16, FLASH_BASE + 0x260);
+    install_vector_handler(17, FLASH_BASE + 0x280);
+
+    cpu_exception_entry(16);
+    cpu_exception_entry(17);
+
+    ASSERT_EQ(17, cpu.current_irq, "Nested exception should become active");
+    ASSERT_EQ(2, cores[0].exception_depth, "Exception depth should reflect nesting");
+    ASSERT_TRUE(nvic_states[0].iabr & 0x3, "Both nested IRQs should be marked active");
+
+    cpu_exception_return(0xFFFFFFF9);
+    ASSERT_EQ(16, cpu.current_irq, "Returning from nested exception should restore the previous IRQ");
+    ASSERT_EQ(1, cores[0].exception_depth, "Exception depth should decrease after one return");
+    ASSERT_EQ(0x1, nvic_states[0].iabr, "Only the outer IRQ should remain active");
+
+    cpu_exception_return(0xFFFFFFF9);
+    ASSERT_EQ(0xFFFFFFFF, cpu.current_irq, "Returning from the outer exception should restore thread mode");
+    ASSERT_EQ(0, cores[0].exception_depth, "Exception depth should return to zero");
+    ASSERT_EQ(0, nvic_states[0].iabr, "No IRQs should remain active");
+    PASS();
+}
+
+TEST(test_cpu_step_invalid_pc_enters_hardfault) {
+    reset_cpu();
+    uint32_t handler_addr = FLASH_BASE + 0x2A0;
+
+    install_vector_handler(EXC_HARDFAULT, handler_addr);
+    cpu.r[15] = 0x40000000;
+
+    cpu_step();
+
+    ASSERT_EQ(EXC_HARDFAULT, cpu.current_irq, "Invalid PC should enter HardFault");
+    ASSERT_EQ(handler_addr, cpu.r[15], "PC should jump to the HardFault handler");
+    ASSERT_EQ(0, cores[0].is_halted, "Single HardFault should not lock up the core");
+    PASS();
+}
+
+TEST(test_double_hardfault_locks_up) {
+    reset_cpu();
+    cpu.current_irq = EXC_HARDFAULT;
+
+    cpu_exception_entry(EXC_HARDFAULT);
+
+    ASSERT_EQ(1, cores[0].is_halted, "HardFault during HardFault should lock up the core");
+    ASSERT_EQ(0xFFFFFFFF, cpu.r[15], "Lockup should halt execution");
     PASS();
 }
 
@@ -3116,7 +3318,7 @@ TEST(test_timing_stmia_ldmia_1_plus_n) {
 
 static void test_cpuid_register(void) {
     /* CPUID at 0xE000ED00 should return Cortex-M0+ identifier */
-    uint32_t cpuid = nvic_read_register(0xE000ED00);
+    uint32_t cpuid = mem_read32(SCB_BASE);
     /* Implementer=ARM(0x41), PartNo=0xC60(Cortex-M0+) */
     ASSERT_EQ(0x41, (cpuid >> 24) & 0xFF, "CPUID Implementer = ARM");
     ASSERT_EQ(0xC60, (cpuid >> 4) & 0xFFF, "CPUID PartNo = Cortex-M0+");
@@ -3126,7 +3328,7 @@ static void test_cpuid_register(void) {
 static void test_nvic_iabr_read(void) {
     /* IABR should return the active bit register */
     nvic_init();
-    uint32_t iabr = nvic_read_register(NVIC_IABR);
+    uint32_t iabr = mem_read32(NVIC_IABR);
     ASSERT_EQ(0, iabr, "IABR initially 0");
     PASS();
 }
@@ -3135,9 +3337,9 @@ static void test_nvic_ipr7_readwrite(void) {
     /* IPR7 covers IRQs 24-27 (RP2040 has 26 IRQs: 0-25) */
     nvic_init();
     /* Write priority for IRQ 24 and 25 */
-    nvic_write_register(NVIC_IPR + 24, 0x0000C040);
+    mem_write32(NVIC_IPR + 24, 0x0000C040);
     /* Read back */
-    uint32_t ipr7 = nvic_read_register(NVIC_IPR + 24);
+    uint32_t ipr7 = mem_read32(NVIC_IPR + 24);
     ASSERT_EQ(0x40, ipr7 & 0xFF, "IPR7 byte 0 = IRQ24 priority 0x40");
     ASSERT_EQ(0xC0, (ipr7 >> 8) & 0xFF, "IPR7 byte 1 = IRQ25 priority 0xC0");
     PASS();
@@ -3666,6 +3868,12 @@ int main(void) {
     BEGIN_CATEGORY("Memory Bus");
     RUN_TEST(test_flash_read_write);
     RUN_TEST(test_ram_read_write);
+    RUN_TEST(test_flash_alias_writes_ignored);
+    RUN_TEST(test_nvic_memory_map_subword_access);
+    RUN_TEST(test_xip_ssi_atomic_aliases);
+    RUN_TEST(test_io_qspi_atomic_aliases);
+    RUN_TEST(test_pads_qspi_atomic_aliases);
+    RUN_TEST(test_busctrl_atomic_aliases);
     END_CATEGORY("Memory Bus");
 
     BEGIN_CATEGORY("Instruction Integration");
@@ -3700,6 +3908,8 @@ int main(void) {
     BEGIN_CATEGORY("SCB Registers");
     RUN_TEST(test_scb_shpr_registers);
     RUN_TEST(test_scb_vtor_write);
+    RUN_TEST(test_scb_icsr_memory_map_pending_bits);
+    RUN_TEST(test_scb_aircr_sysresetreq_requires_key);
     END_CATEGORY("SCB Registers");
 
     BEGIN_CATEGORY("Resets Peripheral");
@@ -3813,6 +4023,10 @@ int main(void) {
 
     BEGIN_CATEGORY("Exception Entry/Return");
     RUN_TEST(test_exception_entry_return);
+    RUN_TEST(test_cpu_step_delivers_pending_external_irq);
+    RUN_TEST(test_exception_nesting_restores_previous_exception);
+    RUN_TEST(test_cpu_step_invalid_pc_enters_hardfault);
+    RUN_TEST(test_double_hardfault_locks_up);
     END_CATEGORY("Exception Entry/Return");
 
     BEGIN_CATEGORY("CMN");

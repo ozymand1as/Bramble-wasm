@@ -162,7 +162,10 @@ uint32_t gpio_read32(uint32_t addr) {
     }
 
     /* PADS_BANK0 registers with alias support */
-    if (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) {
+    if ((addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x80) ||
+        (addr >= PADS_BANK0_BASE + REG_ALIAS_XOR_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_XOR_BITS + 0x80) ||
+        (addr >= PADS_BANK0_BASE + REG_ALIAS_SET_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_SET_BITS + 0x80) ||
+        (addr >= PADS_BANK0_BASE + REG_ALIAS_CLR_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_CLR_BITS + 0x80)) {
         /* Strip alias offset to get base address */
         uint32_t base_addr = addr;
         
@@ -302,7 +305,10 @@ void gpio_write32(uint32_t addr, uint32_t val) {
 
     /* ===== CRITICAL FIX: PADS_BANK0 with Alias Support ===== */
     /* Handle all 4 alias regions: 0x0000, 0x1000, 0x2000, 0x3000 */
-    if (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) {
+    if ((addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x80) ||
+        (addr >= PADS_BANK0_BASE + REG_ALIAS_XOR_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_XOR_BITS + 0x80) ||
+        (addr >= PADS_BANK0_BASE + REG_ALIAS_SET_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_SET_BITS + 0x80) ||
+        (addr >= PADS_BANK0_BASE + REG_ALIAS_CLR_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_CLR_BITS + 0x80)) {
         /* Determine which alias region we're in */
         uint32_t alias_offset = REG_ALIAS_RW_BITS;  /* Default to normal access */
         uint32_t base_addr = addr;

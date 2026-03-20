@@ -193,6 +193,18 @@ static int pads_qspi_match(uint32_t addr) {
     return (base >= PADS_QSPI_BASE && base < PADS_QSPI_BASE + PADS_QSPI_BLOCK_SIZE);
 }
 
+static int gpio_bus_match(uint32_t addr) {
+    return ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
+            (addr >= IO_BANK0_BASE + REG_ALIAS_XOR_BITS && addr < IO_BANK0_BASE + REG_ALIAS_XOR_BITS + 0x200) ||
+            (addr >= IO_BANK0_BASE + REG_ALIAS_SET_BITS && addr < IO_BANK0_BASE + REG_ALIAS_SET_BITS + 0x200) ||
+            (addr >= IO_BANK0_BASE + REG_ALIAS_CLR_BITS && addr < IO_BANK0_BASE + REG_ALIAS_CLR_BITS + 0x200) ||
+            (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x80) ||
+            (addr >= PADS_BANK0_BASE + REG_ALIAS_XOR_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_XOR_BITS + 0x80) ||
+            (addr >= PADS_BANK0_BASE + REG_ALIAS_SET_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_SET_BITS + 0x80) ||
+            (addr >= PADS_BANK0_BASE + REG_ALIAS_CLR_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_CLR_BITS + 0x80) ||
+            (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100));
+}
+
 static uint32_t pads_qspi_read(uint32_t offset) {
     if (offset < sizeof(pads_qspi_regs)) return pads_qspi_regs[offset / 4];
     return 0;
@@ -1076,12 +1088,7 @@ void mem_write32(uint32_t addr, uint32_t val) {
 
     /* GPIO registers - IO_BANK0 base + atomic alias regions for interrupt registers.
      * Aliases at +0x1000 (XOR), +0x2000 (SET), +0x3000 (CLR) used by hw_set_bits/hw_clear_bits. */
-    if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-        (addr >= IO_BANK0_BASE + REG_ALIAS_XOR_BITS && addr < IO_BANK0_BASE + REG_ALIAS_XOR_BITS + 0x200) ||
-        (addr >= IO_BANK0_BASE + REG_ALIAS_SET_BITS && addr < IO_BANK0_BASE + REG_ALIAS_SET_BITS + 0x200) ||
-        (addr >= IO_BANK0_BASE + REG_ALIAS_CLR_BITS && addr < IO_BANK0_BASE + REG_ALIAS_CLR_BITS + 0x200) ||
-        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||
-        (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
+    if (gpio_bus_match(addr)) {
         gpio_write32(addr, val);
         return;
     }
@@ -1334,9 +1341,7 @@ void mem_write16(uint32_t addr, uint16_t val) {
     }
 
     /* GPIO */
-    if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||
-        (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
+    if (gpio_bus_match(addr)) {
         gpio_write32(addr & ~0x3, val);
         return;
     }
@@ -1390,9 +1395,7 @@ void mem_write8(uint32_t addr, uint8_t val) {
     }
 
     /* GPIO */
-    if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||
-        (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
+    if (gpio_bus_match(addr)) {
         gpio_write32(addr & ~0x3, val);
         return;
     }
@@ -1490,12 +1493,7 @@ uint32_t mem_read32(uint32_t addr) {
     }
 
     /* GPIO registers */
-    if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-        (addr >= IO_BANK0_BASE + REG_ALIAS_XOR_BITS && addr < IO_BANK0_BASE + REG_ALIAS_XOR_BITS + 0x200) ||
-        (addr >= IO_BANK0_BASE + REG_ALIAS_SET_BITS && addr < IO_BANK0_BASE + REG_ALIAS_SET_BITS + 0x200) ||
-        (addr >= IO_BANK0_BASE + REG_ALIAS_CLR_BITS && addr < IO_BANK0_BASE + REG_ALIAS_CLR_BITS + 0x200) ||
-        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||
-        (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
+    if (gpio_bus_match(addr)) {
         return gpio_read32(addr);
     }
 
@@ -1647,9 +1645,7 @@ uint16_t mem_read16(uint32_t addr) {
     }
 
     /* GPIO */
-    if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||
-        (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
+    if (gpio_bus_match(addr)) {
         uint32_t val32 = gpio_read32(addr & ~0x3);
         return (uint16_t)(val32 & 0xFFFF);
     }
@@ -1696,9 +1692,7 @@ uint8_t mem_read8(uint32_t addr) {
     }
 
     /* GPIO */
-    if ((addr >= IO_BANK0_BASE && addr < IO_BANK0_BASE + 0x200) ||
-        (addr >= PADS_BANK0_BASE && addr < PADS_BANK0_BASE + 0x4000 + 0x80) ||
-        (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100)) {
+    if (gpio_bus_match(addr)) {
         uint32_t val32 = gpio_read32(addr & ~0x3);
         uint8_t byte_offset = addr & 0x3;
         return (uint8_t)((val32 >> (byte_offset * 8)) & 0xFF);
