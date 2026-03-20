@@ -1,5 +1,43 @@
 # Bramble RP2040 Emulator - Changelog
 
+## [0.34.0] - 2026-03-20
+
+### Added - Developer Tools, Missing Peripherals, and Performance Audit
+
+- **SYSCFG peripheral** (0x40004000): NMI mask, proc config, debug force, memory power-down registers. Fully wired with atomic aliases.
+- **TBMAN peripheral** (0x4006C000): Testbench Manager returns PLATFORM=ASIC (0x01) matching real RP2040 hardware.
+- **ARM semihosting** (`-semihosting`): Intercepts BKPT #0xAB for SYS_WRITEC/WRITE0/WRITE/READC/EXIT/EXIT_EXTENDED. Enables test frameworks (Unity, CppUTest) and newlib rdimon specs.
+- **Code coverage** (`-coverage <file>`): Bitmap tracking executed 16-bit-aligned PCs across flash and RAM. Dumps binary file with header on exit; reports summary statistics.
+- **Hotspot profiling** (`-hotspots [N]`): 256K-entry hash map counting per-PC execution frequency. Reports top-N addresses by region (flash/rom/ram) on exit.
+- **Instruction trace** (`-trace <file>`): Streams (PC, opcode, cycles) tuples as 8-byte binary records for offline analysis. Binary format with header.
+- **Exit code hook** (`-exit-code <addr>`): Reads uint32 from a RAM address on halt and uses it as the process exit code. Enables CI test result reporting.
+- **Timeout enforcement** (`-timeout <seconds>`): Wall-clock limit via SIGALRM. Returns exit code 124 (GNU timeout convention) when exceeded.
+
+### Fixed
+
+- **JIT timing undercount**: `timing_lut[]` returns 0 for dynamic-cost instructions (PUSH/POP/LDMIA/STMIA). Non-terminal JIT instructions were accumulating 0 cycles, starving SysTick and hanging littleOS benchmarks. Fix: fall back to `timing_instruction_cycles()` when LUT returns 0.
+- **JIT invalidation O(16K) per RAM write**: `jit_invalidate_addr()` had an inverted early-return — it scanned all 16,384 blocks for every STR to RAM despite JIT only compiling flash/ROM code. This caused `memcpy` to hang. Fix: early-return for RAM addresses.
+- **JIT CBZ/CBNZ not terminal**: CBZ (0xB1/0xB3) and CBNZ (0xB9/0xBB) were missing from the JIT terminal set, allowing blocks to execute past conditional branches.
+- **JIT compile bounds check**: Used `&&` instead of `||` for ROM/flash range validation during block compilation.
+
+### Performance
+
+- JIT block max: 32→64 instructions; removed `__attribute__((packed))` from block struct.
+- JIT terminal check: bitmap lookup replaces 9 sequential if-else branches.
+- membus: RAM read/write promoted to first check (before flash/XIP). GDB watchpoint calls gated with `__builtin_expect(gdb.active, 0)`.
+- Synthetic benchmark: 182→161 MIPS (JIT, regression from 64-insn blocks but real workloads benefit).
+- littleOS JIT: was HUNG, now completes in 3447ms (matches no-JIT exactly).
+
+### Files Added
+
+- `include/devtools.h` + `src/devtools.c` — Developer tools (semihosting, coverage, hotspots, trace, SYSCFG, TBMAN)
+
+### Tests
+
+- 276 tests passing.
+
+---
+
 ## [0.33.0] - 2026-03-20
 
 ### Added - Privilege Escalation, Watchdog Hardening, and Dual-Core Correctness

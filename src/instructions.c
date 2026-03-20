@@ -3,6 +3,7 @@
 #include "emulator.h"
 #include "instructions.h"
 #include "nvic.h"
+#include "devtools.h"
 
 /* pc_updated flag: instruction handlers set this when they modify cpu.r[15] */
 extern int pc_updated;
@@ -1112,8 +1113,12 @@ void instr_bkpt(uint16_t instr) {
                cpu.r[13], cpu.r[14], cpu.r[15]);
         printf("  XPSR=0x%08X\n", cpu.xpsr);
     }
-    /* Trigger HardFault instead of halting */
-    (void)imm;
+    /* ARM semihosting: BKPT #0xAB */
+    if (imm == 0xAB && semihosting_handle()) {
+        pc_updated = 1;
+        return;
+    }
+    /* Trigger HardFault for all other BKPT */
     cpu_exception_entry(EXC_HARDFAULT);
     pc_updated = 1;
 }

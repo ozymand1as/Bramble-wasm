@@ -17,6 +17,7 @@
 #include "usb.h"
 #include "rtc.h"
 #include "gdb.h"
+#include "devtools.h"
 
 /* ========================================================================
  * XIP Cache Control State (0x14000000)
@@ -1283,6 +1284,28 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;  /* Silently accept writes */
     }
 
+    /* SYSCFG (0x40004000) */
+    if (syscfg_match(addr)) {
+        uint32_t alias = addr & 0x3000;
+        uint32_t offset = addr & 0xFFF;
+        if (alias == 0x0000) {
+            syscfg_write(offset, val);
+        } else if (alias == 0x2000) {
+            syscfg_write(offset, syscfg_read(offset) | val);
+        } else if (alias == 0x3000) {
+            syscfg_write(offset, syscfg_read(offset) & ~val);
+        } else {
+            syscfg_write(offset, syscfg_read(offset) ^ val);
+        }
+        return;
+    }
+
+    /* TBMAN (0x4006C000) */
+    if (tbman_match(addr)) {
+        tbman_write(addr & 0xFFF, val);
+        return;
+    }
+
     /* Stub out other peripheral writes for now. */
     if (addr >= 0x40000000 && addr < 0x50000000) {
         if (mem_debug_unmapped)
@@ -1596,6 +1619,16 @@ uint32_t mem_read32(uint32_t addr) {
             return 0;  /* CHIP_RESET: no reset sources */
         }
         return 0;
+    }
+
+    /* SYSCFG (0x40004000) */
+    if (syscfg_match(addr)) {
+        return syscfg_read(addr & 0xFFF);
+    }
+
+    /* TBMAN (0x4006C000) */
+    if (tbman_match(addr)) {
+        return tbman_read(addr & 0xFFF);
     }
 
     /* Stub peripheral reads: return 0 for now. */

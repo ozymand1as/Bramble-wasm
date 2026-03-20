@@ -21,6 +21,7 @@
 #include <poll.h>
 #include <termios.h>
 #include <errno.h>
+#include "devtools.h"
 
 #include "emulator.h"
 #include "gpio.h"
@@ -339,6 +340,13 @@ int main(int argc, char **argv) {
         fprintf(stderr, "  -tap <ifname>               Bridge WiFi to TAP interface (implies -wifi, sudo)\n");
         fprintf(stderr, "\nPerformance:\n");
         fprintf(stderr, "  -jit        Enable JIT basic block compilation for hot loops\n");
+        fprintf(stderr, "\nDeveloper Tools:\n");
+        fprintf(stderr, "  -semihosting          Enable ARM semihosting (BKPT #0xAB)\n");
+        fprintf(stderr, "  -coverage <file>      Write code coverage bitmap on exit\n");
+        fprintf(stderr, "  -hotspots [N]         Print top N PCs by execution count (default: 20)\n");
+        fprintf(stderr, "  -trace <file>         Write instruction trace to binary file\n");
+        fprintf(stderr, "  -exit-code <addr>     Read exit code from RAM address on halt\n");
+        fprintf(stderr, "  -timeout <seconds>    Kill emulator after N seconds (exit 124)\n");
         return EXIT_FAILURE;
     }
 
@@ -360,6 +368,13 @@ int main(int argc, char **argv) {
     size_t emmc_size = EMMC_DEFAULT_SIZE;
     char *tap_name = NULL;
     int jit_mode = 0;
+    int semihosting_mode = 0;
+    char *coverage_path = NULL;
+    int hotspots_mode = 0;
+    int hotspots_n = 20;
+    char *trace_path = NULL;
+    char *exit_code_arg = NULL;
+    int timeout_secs = 0;
     int threaded_mode = 0;   /* Use pthread-per-core execution */
     int cores_auto = 0;     /* -cores auto requested */
     int thread_quantum = 0;
@@ -502,6 +517,30 @@ int main(int argc, char **argv) {
             }
         } else if (strcmp(argv[i], "-jit") == 0) {
             jit_mode = 1;
+        } else if (strcmp(argv[i], "-semihosting") == 0) {
+            semihosting_mode = 1;
+        } else if (strcmp(argv[i], "-coverage") == 0) {
+            if (i + 1 < argc) {
+                coverage_path = argv[++i];
+            }
+        } else if (strcmp(argv[i], "-hotspots") == 0) {
+            hotspots_mode = 1;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                hotspots_n = atoi(argv[++i]);
+                if (hotspots_n <= 0) hotspots_n = 20;
+            }
+        } else if (strcmp(argv[i], "-trace") == 0) {
+            if (i + 1 < argc) {
+                trace_path = argv[++i];
+            }
+        } else if (strcmp(argv[i], "-exit-code") == 0) {
+            if (i + 1 < argc) {
+                exit_code_arg = argv[++i];
+            }
+        } else if (strcmp(argv[i], "-timeout") == 0) {
+            if (i + 1 < argc) {
+                timeout_secs = atoi(argv[++i]);
+            }
         }
     }
 
@@ -762,6 +801,35 @@ int main(int argc, char **argv) {
     }
 
     /* ========================================================================
+     * Developer Tools Initialization
+     * ======================================================================== */
+
+    if (semihosting_mode) {
+        semihosting_init();
+        fprintf(stderr, "[Init] ARM semihosting enabled (BKPT #0xAB)\n");
+    }
+    if (coverage_path) {
+        coverage_init();
+        fprintf(stderr, "[Init] Code coverage enabled → %s\n", coverage_path);
+    }
+    if (hotspots_mode) {
+        hotspots_top_n = hotspots_n;
+        hotspots_init();
+        fprintf(stderr, "[Init] Hotspot profiling enabled (top %d)\n", hotspots_n);
+    }
+    if (trace_path) {
+        trace_init(trace_path);
+    }
+    if (exit_code_arg) {
+        exit_code_addr = (uint32_t)strtoul(exit_code_arg, NULL, 0);
+        exit_code_enabled = 1;
+        fprintf(stderr, "[Init] Exit code hook at 0x%08X\n", exit_code_addr);
+    }
+    if (timeout_secs > 0) {
+        timeout_start(timeout_secs);
+    }
+
+    /* ========================================================================
      * Execution Phase
      * ======================================================================== */
 
@@ -826,6 +894,15 @@ int main(int argc, char **argv) {
                        cores[CORE1].is_halted ? "halted" : "run",
                        cores[CORE1].is_wfi ? "/wfi" : "");
             }
+
+            /* Timeout check */
+            if (timeout_expired) {
+                fprintf(stderr, "[Timeout] %d second limit reached\n", timeout_seconds);
+                break;
+            }
+
+            /* Semihosting exit */
+            if (semihost_exit_requested) break;
 
             /* Safety limit */
             if (!stdin_enabled && step_count > 1000000) {
@@ -914,6 +991,15 @@ int main(int argc, char **argv) {
                 continue;
             }
 
+            /* Timeout check */
+            if (timeout_expired) {
+                fprintf(stderr, "[Timeout] %d second limit reached\n", timeout_seconds);
+                break;
+            }
+
+            /* Semihosting exit */
+            if (semihost_exit_requested) break;
+
             /* Safety limit: prevent infinite loops (disabled in interactive/GDB mode) */
             instruction_count = cores[CORE0].step_count + cores[CORE1].step_count;
             if (!gdb_enabled && !stdin_enabled && instruction_count > 1000000000) {
@@ -978,8 +1064,33 @@ int main(int argc, char **argv) {
     if (jit_mode) {
         jit_report_stats();
     }
+    if (coverage_enabled) {
+        coverage_report();
+    }
+    if (hotspots_enabled) {
+        hotspots_report();
+    }
     fprintf(stderr,"═══════════════════════════════════════════════════════════\n");
 
+    /* Developer tools cleanup and output */
+    if (coverage_path) {
+        coverage_dump(coverage_path);
+        coverage_cleanup();
+    }
+    if (hotspots_enabled) hotspots_cleanup();
+    if (trace_enabled) trace_cleanup();
+    if (timeout_secs > 0) timeout_cancel();
 
-    return EXIT_SUCCESS;
+    /* Determine exit code */
+    int result = EXIT_SUCCESS;
+    if (timeout_expired) {
+        result = 124;  /* Match GNU timeout convention */
+    } else if (semihost_exit_requested) {
+        result = semihost_exit_code;
+    } else if (exit_code_enabled) {
+        result = (int)mem_read32(exit_code_addr);
+        fprintf(stderr, "[Exit] Code from 0x%08X: %d\n", exit_code_addr, result);
+    }
+
+    return result;
 }

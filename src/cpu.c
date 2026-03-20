@@ -20,6 +20,7 @@
 #include "rom.h"
 #include "rtc.h"
 #include "corepool.h"
+#include "devtools.h"
 
 /* ========================================================================
  * Single-Core Global State
@@ -1250,7 +1251,13 @@ pc_valid:
 
     /* Determine if a branch was taken (PC changed to something other than pc+2) */
     int branch_taken = (cpu.r[15] != pc + 2);
-    timing_tick(timing_instruction_cycles(instr, branch_taken));
+    uint32_t cycles = timing_instruction_cycles(instr, branch_taken);
+    timing_tick(cycles);
+
+    /* Developer tools: coverage, hotspots, trace (gated by global flags) */
+    if (__builtin_expect(coverage_enabled, 0)) coverage_record(pc);
+    if (__builtin_expect(hotspots_enabled, 0)) hotspots_record(pc);
+    if (__builtin_expect(trace_enabled, 0))    trace_record(pc, instr, (uint16_t)cycles);
 }
 
 /* ========================================================================

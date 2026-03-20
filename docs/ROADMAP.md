@@ -1,12 +1,12 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: v0.33.0
+## Current State: v0.34.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | Instructions | ~75% | 65+ Thumb-1; 32-bit: BL, MSR, MRS, DSB/DMB/ISB |
-| Memory Map | ~97% | Flash + XIP aliases + XIP cache ctrl + XIP SRAM + XIP SSI + SRAM + SRAM alias + ROM (16KB) + NVIC/SCB MMIO + IO_QSPI/PADS_QSPI/BUSCTRL aliases |
-| Peripherals | ~99% | GPIO, Timer, NVIC+SysTick, UART (Tx+Rx+stdin+TCP), SPI (FIFOs+device cb), I2C (FIFO+device cb), PWM, DMA, PIO (full + clkdiv), Resets, Clocks, XOSC, PLLs, ROSC, Watchdog (reboot), ADC (FIFO + round-robin), SIO divider + interpolators, USB (host enum + CDC + multi-packet IN), RTC (ticking), SYSINFO, IO_QSPI, PADS_QSPI |
+| Memory Map | ~99% | Flash + XIP aliases + XIP cache ctrl + XIP SRAM + XIP SSI + SRAM + SRAM alias + ROM (16KB) + NVIC/SCB MMIO + IO_QSPI/PADS_QSPI/BUSCTRL + SYSCFG + TBMAN |
+| Peripherals | ~100% | All 29 RP2040 peripherals emulated (27 full + 5 stubs); only VREG electrical model not modeled |
 | Storage | SD card + eMMC | SPI-attached SD (SDHC, CSD v2.0) and eMMC with file-backed images |
 | Exceptions | ~95% | Entry/return, priority preemption, SysTick, PendSV, SVCall, HardFault, nested unwind, `cpu_step()` IRQ delivery, lockup |
 | Boot | ~95% | Vector table + SDK boot peripherals + ROM function table + boot2 auto-detect + ROM soft-float/double |
@@ -15,17 +15,17 @@
 | Multi-Device | Wire protocol | Unix socket IPC for UART/GPIO between Bramble instances |
 | Threading | Host-threaded | pthread-per-core, WFI sleep, dynamic core allocation, multi-instance pool |
 | Privilege | Auto-sudo | `-tap` and `-mount` detect missing root and re-exec via sudo |
+| Dev Tools | Complete | Semihosting, coverage, hotspots, trace, exit codes, timeouts |
 | Validation | 276 tests | Loader hardening, core pool, wire transport, watchdog reset, console routing, memory-map aliases, exception-path, and multicore reboot coverage |
 
-### Recent Changes (v0.33.0)
+### Recent Changes (v0.34.0)
 
-- Automatic privilege escalation for `-tap` (TAP/TUN) and `-mount` (FUSE) with `BRAMBLE_ESCALATED` env guard.
-- Watchdog reboot now fully resets multicore state: `num_active_cores` back to 1, Core 1 bootrom launch state machine cleared, spinlocks and shared RAM zeroed.
-- `nvic_init()` now calls `systick_reset()` so SysTick state is properly cleared on reboot.
-- JIT cache expanded to 16384 blocks (max 64 instructions each) with pre-computed per-instruction cycle costs.
-- Hardened UF2 and ELF loading against out-of-range and overflowed inputs.
-- Core pool registry updates and wire transport framing were made safer under contention and partial stream I/O.
-- `-stdin` now routes host input to one active guest console: USB CDC when fully active, otherwise UART0.
+- **SYSCFG** (0x40004000) and **TBMAN** (0x4006C000) peripherals added — completes RP2040 peripheral map.
+- **ARM semihosting** (`-semihosting`): BKPT #0xAB interception for test framework I/O and exit codes.
+- **Code coverage** (`-coverage`), **hotspot profiling** (`-hotspots`), **instruction trace** (`-trace`).
+- **Exit code hook** (`-exit-code`) and **timeout enforcement** (`-timeout`) for CI integration.
+- JIT fixes: timing undercount for PUSH/POP/LDMIA/STMIA, O(16K) invalidation scan on every RAM write, missing CBZ/CBNZ terminals.
+- membus RAM fast-path promotion, GDB watchpoint call gating.
 
 ---
 

@@ -52,6 +52,7 @@ set(SOURCES
     src/corepool.c
     src/cyw43.c
     src/tapif.c
+    src/devtools.c
 )
 
 # Executable
@@ -109,6 +110,7 @@ set(LIB_SOURCES
     src/gdb.c
     src/cyw43.c
     src/tapif.c
+    src/devtools.c
 )
 
 # Test executable

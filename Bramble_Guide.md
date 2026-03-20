@@ -132,7 +132,18 @@ bramble <firmware.uf2|firmware.elf> [options]
 | `-debug-mem` | | Log unmapped peripheral read/write accesses to stderr |
 | `-jit` | | Enable JIT basic block compilation for hot loops |
 
-## 3.3 Storage Options
+## 3.3 Developer Tools
+
+| Flag | Arguments | Description |
+|------|-----------|-------------|
+| `-semihosting` | | Enable ARM semihosting via BKPT #0xAB (SYS_WRITE/EXIT/etc.) |
+| `-coverage` | `<file>` | Write code coverage bitmap (flash + RAM PCs) on exit |
+| `-hotspots` | `[N]` | Print top N PCs by execution count on exit (default: 20) |
+| `-trace` | `<file>` | Write instruction trace (PC, opcode, cycles) to binary file |
+| `-exit-code` | `<addr>` | Read uint32 from RAM address on halt as process exit code |
+| `-timeout` | `<seconds>` | Kill emulator after N seconds (exit code 124) |
+
+## 3.4 Storage Options
 
 | Flag | Arguments | Description |
 |------|-----------|-------------|
@@ -1234,6 +1245,7 @@ Version source of truth: `CHANGELOG.md` (including the `Unreleased` section for 
 
 | Version | Key Features |
 |---------|-------------|
+| v0.34.0 | Developer tools (semihosting, coverage, hotspots, trace, exit codes, timeouts), SYSCFG + TBMAN peripherals, JIT fixes |
 | v0.33.0 | Auto-sudo for `-tap`/`-mount`, watchdog reboot resets full multicore state, SysTick reset on reboot |
 | v0.31.0 | CYW43/Pico W support, TAP bridge, JIT basic-block compilation, benchmarked speedups |
 | v0.30.0 | GDB watchpoints + conditional breakpoints, dual-core GDB threads, decoded instruction cache, double-fault lockup detection |
