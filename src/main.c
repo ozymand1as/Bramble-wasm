@@ -756,38 +756,46 @@ int main(int argc, char **argv) {
         flash_persist_open();
     }
 
-    /* FUSE mount: expose flash filesystem as host directory */
+    /* FUSE mount: expose flash filesystem as host directory.
+     * Scans cpu.flash[] (UF2/ELF firmware + persisted flash data) for a FAT
+     * partition.  Works with or without -flash: without -flash the mount is
+     * volatile (lost on exit); with -flash changes persist across runs.  */
     if (mount_path) {
-        if (!flash_path) {
-            fprintf(stderr, "[Error] -mount requires -flash <path>\n");
-            return EXIT_FAILURE;
-        }
         uint32_t fs_offset = mount_offset;
 
-        /* Auto-scan: if user didn't specify -mount-offset, scan flash for FAT BPB */
+        /* Auto-scan: if user didn't specify -mount-offset, scan the loaded
+         * flash image (firmware + restored data) for a FAT boot signature. */
         if (!mount_offset_set) {
             uint32_t found = 0;
             for (uint32_t off = 0; off + 512 <= FLASH_SIZE; off += 512) {
-                if (cpu.flash[off + 510] == 0x55 && cpu.flash[off + 511] == 0xAA) {
-                    /* Validate BPB: bytes_per_sector=512, sectors_per_cluster>0 */
-                    uint16_t bps = (uint16_t)cpu.flash[off + 11] |
-                                   ((uint16_t)cpu.flash[off + 12] << 8);
-                    uint8_t spc = cpu.flash[off + 13];
-                    uint8_t nfats = cpu.flash[off + 16];
-                    if (bps == 512 && spc > 0 && nfats > 0) {
-                        fs_offset = off;
-                        found = 1;
-                        fprintf(stderr, "[FUSE] Auto-detected FAT partition at flash offset 0x%06X\n", off);
-                        break;
-                    }
+                if (cpu.flash[off + 510] != 0x55 || cpu.flash[off + 511] != 0xAA)
+                    continue;
+                /* Validate BPB fields */
+                uint16_t bps = (uint16_t)cpu.flash[off + 11] |
+                               ((uint16_t)cpu.flash[off + 12] << 8);
+                uint8_t spc  = cpu.flash[off + 13];
+                uint8_t nfats = cpu.flash[off + 16];
+                uint16_t ts  = (uint16_t)cpu.flash[off + 19] |
+                               ((uint16_t)cpu.flash[off + 20] << 8);
+                if (bps == 512 && spc > 0 && nfats > 0 && ts > 0) {
+                    fs_offset = off;
+                    found = 1;
+                    fprintf(stderr, "[FUSE] Auto-detected FAT partition at flash offset 0x%06X\n", off);
+                    break;
                 }
             }
             if (!found) {
-                fprintf(stderr, "[FUSE] No FAT partition found in flash. The filesystem may be created\n");
-                fprintf(stderr, "[FUSE] on first boot. Re-run after firmware has initialized flash.\n");
+                fprintf(stderr, "[FUSE] No FAT partition found in flash (scanned UF2 + persisted data).\n");
+                fprintf(stderr, "[FUSE] The filesystem may be created on first boot — re-run after.\n");
+                if (!flash_path)
+                    fprintf(stderr, "[FUSE] Hint: use -flash <path> to persist the filesystem across runs.\n");
                 fprintf(stderr, "[FUSE] Or specify offset manually: -mount-offset <hex>\n");
                 goto skip_fuse;
             }
+        }
+
+        if (!flash_path) {
+            fprintf(stderr, "[FUSE] Warning: no -flash file — mount is volatile (changes lost on exit)\n");
         }
 
         uint32_t fs_size = FLASH_SIZE - fs_offset;
@@ -795,7 +803,8 @@ int main(int argc, char **argv) {
         int fuse_rc = fuse_mount_start(&cpu.flash[fs_offset], fs_size, mount_path);
         if (fuse_rc < 0) {
             fprintf(stderr, "[FUSE] Mount failed at offset 0x%X.\n", fs_offset);
-            fprintf(stderr, "[FUSE] The -flash file is still live-synced to disk for direct host access.\n");
+            if (flash_path)
+                fprintf(stderr, "[FUSE] The -flash file is still live-synced for direct host access.\n");
         }
     }
 skip_fuse:
