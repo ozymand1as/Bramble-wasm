@@ -26,6 +26,13 @@
 #include "pio.h"
 #include "usb.h"
 
+/*
+ * Each host thread keeps the big lock for a short burst of guest work before
+ * yielding. This cuts mutex/scheduler overhead without changing interrupt
+ * checks inside cpu_step_core().
+ */
+#define COREPOOL_STEP_QUANTUM 64
+
 corepool_state_t corepool = {0};
 
 /* ========================================================================
@@ -292,13 +299,18 @@ static void *core_thread_fn(void *arg) {
             cores[core_id].is_wfi = 0;
         }
 
-        /* Step one instruction */
-        cpu_step_core(core_id);
+        for (int steps = 0; steps < COREPOOL_STEP_QUANTUM; steps++) {
+            if (!corepool.running || cores[core_id].is_halted || cores[core_id].is_wfi) {
+                break;
+            }
 
-        /* Also step shared peripherals (only core 0 drives these) */
-        if (core_id == CORE0) {
-            pio_step();
-            usb_step();
+            cpu_step_core(core_id);
+
+            /* Shared peripheral progression stays tied to guest instruction flow. */
+            if (core_id == CORE0) {
+                pio_step();
+                usb_step();
+            }
         }
 
         pthread_mutex_unlock(&corepool.emu_lock);

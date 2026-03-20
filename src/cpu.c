@@ -182,6 +182,24 @@ static int dispatch_initialized = 0;
 /* Forward declaration for timing (defined after dual-core section) */
 static void timing_tick(uint32_t cycles);
 
+static inline uint16_t cpu_fetch16_fast(uint32_t pc) {
+    if (pc < ROM_SIZE - 1) {
+        return (uint16_t)rom_image[pc] | ((uint16_t)rom_image[pc + 1] << 8);
+    }
+
+    if (pc >= FLASH_BASE && pc + 1 < FLASH_BASE + FLASH_SIZE) {
+        uint32_t offset = pc - FLASH_BASE;
+        return (uint16_t)cpu.flash[offset] | ((uint16_t)cpu.flash[offset + 1] << 8);
+    }
+
+    if (pc >= RAM_BASE && pc + 1 < RAM_TOP) {
+        uint32_t offset = pc - RAM_BASE;
+        return (uint16_t)cpu.ram[offset] | ((uint16_t)cpu.ram[offset + 1] << 8);
+    }
+
+    return mem_read16(pc);
+}
+
 /* ========================================================================
  * Decoded Instruction Cache
  *
@@ -333,7 +351,7 @@ static jit_block_t *jit_compile(uint32_t pc) {
         if (cur_pc >= FLASH_BASE + FLASH_SIZE && cur_pc >= ROM_SIZE)
             break;
 
-        uint16_t instr = mem_read16(cur_pc);
+        uint16_t instr = cpu_fetch16_fast(cur_pc);
 
         /* NOP (0x0000) — don't include, let normal path handle */
         if (instr == 0x0000 && i == 0) break;
@@ -1024,30 +1042,6 @@ void cpu_step(void) {
         return;
     }
 
-    /* Instruction fetch (with cache for 16-bit Thumb) */
-    uint16_t instr;
-    thumb_handler_t cached_handler = NULL;
-
-    if (icache_enabled) {
-        uint32_t idx = (pc >> 1) & ICACHE_MASK;
-        icache_entry_t *entry = &icache[idx];
-        if (entry->pc == pc) {
-            instr = entry->instr;
-            cached_handler = entry->handler;
-            icache_hits++;
-        } else {
-            instr = mem_read16(pc);
-            icache_misses++;
-        }
-    } else {
-        instr = mem_read16(pc);
-    }
-    cpu.step_count++;
-
-    if (cpu.debug_enabled) {
-        printf("[CPU] Step %3u: PC=0x%08X instr=0x%04X\n", cpu.step_count, pc, instr);
-    }
-
     /* Check for pending interrupts (only if PRIMASK allows) */
     if (!cpu.primask) {
         /* Get active exception priority (0xFF if no active exception) */
@@ -1096,15 +1090,12 @@ void cpu_step(void) {
         }
     }
 
-    /* JIT block execution: if no interrupts pending, try executing a
-     * pre-compiled basic block in a tight loop (skips per-instruction
-     * PC check, interrupt check, and dispatch table lookup).
-     * Undo the step_count++ above since jit_execute counts all insns. */
+    /* JIT block execution: if no interrupts are pending, try executing a
+     * pre-compiled basic block before doing any normal fetch/decode work. */
     if (jit_enabled && !cpu.debug_enabled) {
         uint32_t jit_idx = (pc >> 1) & JIT_CACHE_BMASK;
         jit_block_t *block = &jit_cache[jit_idx];
         if (block->start_pc == pc && block->length > 1) {
-            cpu.step_count--;
             jit_execute(block);
             return;
         }
@@ -1113,11 +1104,34 @@ void cpu_step(void) {
             (pc < ROM_SIZE)) {
             block = jit_compile(pc);
             if (block) {
-                cpu.step_count--;
                 jit_execute(block);
                 return;
             }
         }
+    }
+
+    /* Instruction fetch (with cache for 16-bit Thumb) */
+    uint16_t instr;
+    thumb_handler_t cached_handler = NULL;
+
+    if (icache_enabled) {
+        uint32_t idx = (pc >> 1) & ICACHE_MASK;
+        icache_entry_t *entry = &icache[idx];
+        if (entry->pc == pc) {
+            instr = entry->instr;
+            cached_handler = entry->handler;
+            icache_hits++;
+        } else {
+            instr = cpu_fetch16_fast(pc);
+            icache_misses++;
+        }
+    } else {
+        instr = cpu_fetch16_fast(pc);
+    }
+    cpu.step_count++;
+
+    if (cpu.debug_enabled) {
+        printf("[CPU] Step %3u: PC=0x%08X instr=0x%04X\n", cpu.step_count, pc, instr);
     }
 
     /* NOP: all-zero halfword */
@@ -1130,7 +1144,7 @@ void cpu_step(void) {
     /* 32-bit instructions: top 5 bits = 11101/11110/11111 */
     uint8_t top5 = instr >> 11;
     if (top5 >= 0x1D) {  /* 0xE800+ is a 32-bit instruction */
-        uint16_t instr2 = mem_read16(pc + 2);
+        uint16_t instr2 = cpu_fetch16_fast(pc + 2);
         pc_updated = 0;
         if (!thumb32_step(pc, instr, instr2)) {
             /* Unhandled 32-bit instruction -> HardFault */
