@@ -1,6 +1,29 @@
 # Bramble RP2040 Emulator - Changelog
 
-## [Unreleased] - 2026-03-20
+## [0.33.0] - 2026-03-20
+
+### Added - Privilege Escalation, Watchdog Hardening, and Dual-Core Correctness
+
+- Automatic privilege escalation: `-tap` and `-mount` flags now detect when root is needed, explain why, and re-exec via `sudo` with `BRAMBLE_ESCALATED` env guard to prevent loops. Falls back with a manual command hint on failure.
+- Help text annotates privileged flags with `(sudo)` so users know before running.
+- Watchdog reboot now fully resets multicore state: `num_active_cores` reset to 1, Core 1 bootrom launch state machine cleared, spinlocks and shared RAM zeroed, `active_core` reset to CORE0. Firmware must re-launch Core 1 through the standard FIFO protocol after reboot.
+- `nvic_init()` now calls `systick_reset()` so both cores' SysTick counters are properly cleared on watchdog reboot and peripheral re-initialization.
+- `dual_core_init()` resets the Core 1 bootrom state machine (`waiting_for_launch`, `launch_count`) preventing stale launch state from surviving across reboots.
+
+### Fixed
+
+- Watchdog reboot left `num_active_cores = 2` from Core 1 auto-launch, causing the emulator to step a halted Core 1 after reboot instead of letting firmware re-launch it.
+- Watchdog reboot did not clear spinlocks, shared RAM, or the Core 1 bootrom handshake state, potentially causing firmware to see stale inter-core state.
+- SysTick state survived watchdog reboot because `systick_reset()` was never called from `nvic_init()` or the peripheral reset path.
+- Test `test_num_active_cores_default` was invalidated by `setup()` setting `num_active_cores = MAX_CORES` before the test ran.
+
+### Tests
+
+- 276 tests passing (was 274), including watchdog multicore reset correctness and updated core pool assertions.
+
+---
+
+## [Unreleased - pre-0.33.0] - 2026-03-20
 
 ### Changed - Maintenance, Hardening, and Documentation Consolidation
 

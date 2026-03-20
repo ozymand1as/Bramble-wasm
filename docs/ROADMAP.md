@@ -1,6 +1,6 @@
 # Bramble RP2040 Emulator - Roadmap to Full Pico Emulation
 
-## Current State: post-v0.31.0 main
+## Current State: v0.33.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
@@ -14,16 +14,18 @@
 | Networking | UART-to-TCP | Bridge UART to TCP server/client for remote serial access |
 | Multi-Device | Wire protocol | Unix socket IPC for UART/GPIO between Bramble instances |
 | Threading | Host-threaded | pthread-per-core, WFI sleep, dynamic core allocation, multi-instance pool |
-| Validation | 274 tests | Loader hardening, core pool, wire transport, watchdog reset, console routing coverage, memory-map aliases, and exception-path coverage |
+| Privilege | Auto-sudo | `-tap` and `-mount` detect missing root and re-exec via sudo |
+| Validation | 276 tests | Loader hardening, core pool, wire transport, watchdog reset, console routing, memory-map aliases, exception-path, and multicore reboot coverage |
 
-### Recent Maintenance
+### Recent Changes (v0.33.0)
 
+- Automatic privilege escalation for `-tap` (TAP/TUN) and `-mount` (FUSE) with `BRAMBLE_ESCALATED` env guard.
+- Watchdog reboot now fully resets multicore state: `num_active_cores` back to 1, Core 1 bootrom launch state machine cleared, spinlocks and shared RAM zeroed.
+- `nvic_init()` now calls `systick_reset()` so SysTick state is properly cleared on reboot.
+- JIT cache expanded to 16384 blocks (max 64 instructions each) with pre-computed per-instruction cycle costs.
 - Hardened UF2 and ELF loading against out-of-range and overflowed inputs.
-- Watchdog and `SYSRESETREQ` reboots now reinitialize the full runtime peripheral set.
 - Core pool registry updates and wire transport framing were made safer under contention and partial stream I/O.
 - `-stdin` now routes host input to one active guest console: USB CDC when fully active, otherwise UART0.
-- Added dedicated regression coverage for flash/XIP/NVIC/SCB/QSPI/BUSCTRL memory-mapped alias behavior.
-- Added dedicated regression coverage for SVCall, external IRQ delivery, nested exception return, HardFault entry, and double-fault lockup.
 
 ---
 

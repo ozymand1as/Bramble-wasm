@@ -2,16 +2,16 @@
 
 A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroller, capable of loading and executing UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: post-v0.31.0 main
+## Current Status: v0.33.0
 
-274 tests passing. Boots and runs Pico SDK firmware including **MicroPython v1.27.0**, **CircuitPython 10.1.3**, and **littleOS**, with Pico W/CYW43 support, USB CDC REPL, flash write-through persistence, SD card and eMMC emulation, UART-to-TCP networking, multi-instance wiring, GDB watchpoints, host-threaded execution, a decoded instruction cache, optional JIT acceleration, and regression coverage for memory-mapped aliases plus end-to-end exception delivery.
+276 tests passing. Boots and runs Pico SDK firmware including **MicroPython v1.27.0**, **CircuitPython 10.1.3**, and **littleOS**, with Pico W/CYW43 support, USB CDC REPL, flash write-through persistence, SD card and eMMC emulation, UART-to-TCP networking, multi-instance wiring, GDB watchpoints, host-threaded execution, a decoded instruction cache, optional JIT acceleration, automatic privilege escalation for TAP/FUSE operations, and hardened watchdog reboot with full multicore state reset.
 
 ### Coverage
 
 | Area | Status | Details |
 |------|--------|---------|
 | CPU | 65+ instructions | Full Thumb-1 + BL/MSR/MRS/DSB/DMB/ISB, O(1) dispatch, NZCV flags |
-| Dual-Core | Complete | Host-threaded (`-cores 2`), WFI sleep, shared FIFO, spinlocks, core pool |
+| Dual-Core | Complete | Host-threaded (`-cores 2`), WFI sleep, shared FIFO, spinlocks, core pool, Core 1 auto-launch |
 | Memory Map | ~97% | Flash + XIP aliases + XIP SRAM + SRAM + SRAM alias + ROM (16KB) + NVIC/SCB MMIO + XIP SSI/IO_QSPI/PADS_QSPI/BUSCTRL alias coverage |
 | Boot | Complete | Vector table, boot2 auto-detect, ROM function table, ROM soft-float/double |
 | Exceptions | ~95% | NVIC priority preemption, SysTick, PendSV, SVCall, HardFault, nested returns, `cpu_step()` IRQ delivery, double-fault lockup |
@@ -21,7 +21,8 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 | Storage | SD card + eMMC | SPI-attached file-backed block devices |
 | WiFi | CYW43 (Pico W) | gSPI-over-PIO emulation with optional TAP bridge (`-wifi`, `-tap`) |
 | Performance | ICache + JIT | 64K decoded cache by default, optional hot-block JIT (`-jit`) |
-| Tests | 274 | CTest integrated, 50+ categories |
+| Privilege | Auto-sudo | `-tap` and `-mount` auto-escalate with `BRAMBLE_ESCALATED` guard |
+| Tests | 276 | CTest integrated, 50+ categories |
 
 ### Peripherals
 
@@ -41,7 +42,7 @@ A from-scratch ARM Cortex-M0+ emulator for the Raspberry Pi RP2040 microcontroll
 | Resets | `0x4000C000` | Full (reset/unreset, RESET_DONE tracking) |
 | Clocks | `0x40008000` | Full (10 generators, FC0 dynamic freq, SELECTED) |
 | XOSC/PLLs | `0x40024000` | Full (STATUS.STABLE, CS.LOCK) |
-| Watchdog | `0x40058000` | Full (CTRL, TICK, SCRATCH[0-7], reboot) |
+| Watchdog | `0x40058000` | Full (CTRL, TICK, SCRATCH[0-7], reboot with full multicore state reset) |
 | SIO | `0xD0000000` | Full (GPIO, FIFO, spinlocks, hardware divider, interpolators) |
 | ROM | `0x00000000` | Full (16KB, function table, soft-float/double, flash write) |
 | USB | `0x50110000` | Full (host enumeration, CDC data bridge, stdio_usb, multi-packet IN) |

@@ -137,7 +137,7 @@ bramble <firmware.uf2|firmware.elf> [options]
 | Flag | Arguments | Description |
 |------|-----------|-------------|
 | `-flash` | `<path>` | Persistent flash storage (2 MB file); saves/restores across runs |
-| `-mount` | `<dir>` | Mount flash FAT filesystem as host directory via FUSE (requires `-flash`) |
+| `-mount` | `<dir>` | Mount flash FAT filesystem as host directory via FUSE (requires `-flash`, sudo) |
 | `-sdcard` | `<path>` | Attach SD card image file to SPI bus |
 | `-sdcard-spi` | `<0\|1>` | SPI bus for SD card (default: 1) |
 | `-sdcard-size` | `<MB>` | SD card size in MB (default: 64) |
@@ -167,7 +167,7 @@ bramble <firmware.uf2|firmware.elf> [options]
 | Flag | Arguments | Description |
 |------|-----------|-------------|
 | `-wifi` | | Enable CYW43439 WiFi chip emulation (Pico W) |
-| `-tap` | `<ifname>` | Bridge CYW43 WLAN traffic to a host TAP interface (implies `-wifi`) |
+| `-tap` | `<ifname>` | Bridge CYW43 WLAN traffic to a host TAP interface (implies `-wifi`, sudo) |
 
 
 # Part 4: Internal Architecture and Core Modules
@@ -1031,13 +1031,14 @@ CYW43439 WiFi chip emulation for Pico W firmware:
 ./bramble firmware.uf2 -jit
 ```
 
-4096-entry basic block cache:
-- Compiles consecutive instruction sequences into blocks
-- Blocks terminate at branches, 32-bit instructions, or 32-instruction limit
+16384-entry basic block cache:
+- Compiles consecutive instruction sequences into blocks (max 64 instructions)
+- Blocks terminate at branches, 32-bit instructions, or the 64-instruction limit
 - Block execution skips per-instruction PC bounds check, interrupt check, and dispatch lookup
+- Pre-computed per-instruction cycle costs stored in block (avoids timing LUT lookup)
 - Only compiles flash/ROM code (immutable — no invalidation needed)
 - Single-instruction blocks fall back to normal dispatch (zero overhead)
-- ~1.47x speedup over instruction cache alone
+- ~1.50x speedup over instruction cache alone
 - Statistics reported on exit: block compiles, executions, accelerated instructions
 
 ## 10.3 Host Threading
@@ -1233,6 +1234,7 @@ Version source of truth: `CHANGELOG.md` (including the `Unreleased` section for 
 
 | Version | Key Features |
 |---------|-------------|
+| v0.33.0 | Auto-sudo for `-tap`/`-mount`, watchdog reboot resets full multicore state, SysTick reset on reboot |
 | v0.31.0 | CYW43/Pico W support, TAP bridge, JIT basic-block compilation, benchmarked speedups |
 | v0.30.0 | GDB watchpoints + conditional breakpoints, dual-core GDB threads, decoded instruction cache, double-fault lockup detection |
 | v0.29.0 | Per-core NVIC + SysTick behavior, per-core exception nesting, timer core-gating, littleOS boots |
@@ -1269,7 +1271,7 @@ Version source of truth: `CHANGELOG.md` (including the `Unreleased` section for 
 
 Bramble is designed as a practical development tool for the RP2040 ecosystem:
 - add peripheral modules as new firmware requires them
-- validate correctness with automated tests (274 and growing)
+- validate correctness with automated tests (276 and growing)
 - maintain register-level fidelity against the RP2040 datasheet
 - provide a debuggable environment that boots real firmware unmodified
 
