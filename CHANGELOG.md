@@ -1,5 +1,28 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.40.0] - 2026-03-20
+
+### Added - SDK-Compatible Bootrom, RISC-V GDB, 4MB Flash, 20 RV Tests
+
+- **SDK-compatible ROM function table**: RP2350 bootrom now contains a complete ROM function table with lookup mechanism at 0x0300 (RISC-V code). 9 ROM functions at well-known addresses (0x0400+): memcpy, memset, popcount32, clz32, ctz32, reverse32, flash_range_erase, flash_range_program, reboot. Functions intercepted by `rv_rom_intercept()` and executed natively in C.
+- **ROM magic header**: 'RP\x02' at offset 0x10 with function table pointer (0x0100), data table pointer (0x0200), and lookup function pointer (0x0300). Compatible with Pico SDK `rom_func_lookup()`.
+- **ROM table lookup function**: RISC-V code at 0x0300 that iterates function table entries [32-bit code, 32-bit address] and returns matching function pointer.
+- **Boot code improvements**: Bootrom now sets mtvec to trap handler (0x0004) via CSRRW instruction, enabling proper trap handling before firmware sets its own mtvec.
+- **RISC-V GDB stub**: Architecture-aware register access — detects `-arch rv32` and switches to 33-register layout (x0-x31 + PC) instead of ARM's 17 registers (R0-R15 + xPSR). Hart pointers (`gdb_rv_harts[]`) set from main.c execution loop.
+- **4MB flash support**: Flash array increased to 4MB (`FLASH_SIZE_MAX`) for RP2350 compatibility (Pico 2 ships with 4MB). RP2040 mode still defaults to 2MB (`FLASH_SIZE`). Size constants: `FLASH_SIZE_2MB`, `FLASH_SIZE_4MB`, `FLASH_SIZE_16MB`.
+- **20 RISC-V unit tests**: Comprehensive test coverage across 5 categories:
+  - RISC-V CPU (12 tests): init, reset, ADDI, LUI, ADD/SUB, BEQ branching, SW/LW load/store, MUL/DIV, JAL/JALR, compressed C.LI/C.ADDI, CSR mhartid, trap enter/return
+  - RISC-V CLINT (2 tests): mtime ticking, timer interrupt delivery
+  - RISC-V Memory Bus (2 tests): SRAM read/write with aliases, bootrom initialization
+  - RISC-V ICache (1 test): insert/lookup/hit tracking
+  - RP2350 Peripherals (3 tests): BOOTRAM byte/word access, TIMER1 alarm firing, Hazard3 CSR MEIE/MLEI with CLINT integration
+
+### Tests
+
+- 296 tests passing (20 new RISC-V tests), zero warnings.
+
+---
+
 ## [0.39.0] - 2026-03-20
 
 ### Added - Complete RP2350 Hazard3 Emulation (All 3 Tiers)

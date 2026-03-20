@@ -38,6 +38,12 @@
 #include "storage.h"
 #include "corepool.h"
 #include "wire.h"
+#include "rp2350_rv/rv_cpu.h"
+#include "rp2350_rv/rv_clint.h"
+#include "rp2350_rv/rv_membus.h"
+#include "rp2350_rv/rv_bootrom.h"
+#include "rp2350_rv/rp2350_periph.h"
+#include "rp2350_rv/rv_icache.h"
 
 /* ========================================================================
  * Test Framework (Verbose)
@@ -3837,6 +3843,331 @@ TEST(test_wire_poll_handles_partial_uart_frame) {
 }
 
 /* ========================================================================
+ * RISC-V Hazard3 Tests
+ * ======================================================================== */
+
+TEST(test_rv_cpu_init) {
+    rv_cpu_state_t rv;
+    rv_cpu_init(&rv, 0);
+    ASSERT_EQ(1, rv.is_halted, "RV CPU should start halted");
+    ASSERT_EQ(0, rv.hart_id, "Hart ID should be 0");
+    ASSERT_EQ(0, rv.x[0], "x0 should be 0");
+    uint32_t misa = rv.csr[CSR_MISA];
+    ASSERT_TRUE(misa & (1 << 8), "misa should have I bit");
+    ASSERT_TRUE(misa & (1 << 12), "misa should have M bit");
+    ASSERT_TRUE(misa & (1 << 0), "misa should have A bit");
+    ASSERT_TRUE(misa & (1 << 2), "misa should have C bit");
+    PASS();
+}
+
+TEST(test_rv_cpu_reset) {
+    rv_cpu_state_t rv;
+    rv_cpu_init(&rv, 1);
+    rv_cpu_reset(&rv, 0x10000000);
+    ASSERT_EQ(0, rv.is_halted, "RV CPU should not be halted after reset");
+    ASSERT_EQ(0x10000000, rv.pc, "PC should be set to entry");
+    ASSERT_EQ(1, rv.hart_id, "Hart ID should be 1");
+    PASS();
+}
+
+TEST(test_rv_addi_instruction) {
+    rv_cpu_state_t rv;
+    rv_membus_state_t bus;
+    rv_cpu_init(&rv, 0);
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    rv.bus = &bus;
+    rv_cpu_reset(&rv, 0x10000000);
+    /* ADDI x1, x0, 42 (0x02A00093) */
+    uint32_t instr = 0x02A00093;
+    memcpy(&cpu.flash[0], &instr, 4);
+    rv_cpu_step(&rv);
+    ASSERT_EQ(42, rv.x[1], "x1 should be 42 after ADDI x1, x0, 42");
+    ASSERT_EQ(0x10000004, rv.pc, "PC should advance by 4");
+    PASS();
+}
+
+TEST(test_rv_lui_instruction) {
+    rv_cpu_state_t rv;
+    rv_membus_state_t bus;
+    rv_cpu_init(&rv, 0);
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    rv.bus = &bus;
+    rv_cpu_reset(&rv, 0x10000000);
+    /* LUI x2, 0x20000 (sets x2 = 0x20000000) — 0x200000B7 */
+    uint32_t instr = 0x200000B7;  /* LUI x1, 0x20000 */
+    memcpy(&cpu.flash[0], &instr, 4);
+    rv_cpu_step(&rv);
+    ASSERT_EQ(0x20000000, rv.x[1], "x1 should be 0x20000000 after LUI");
+    PASS();
+}
+
+TEST(test_rv_add_sub) {
+    rv_cpu_state_t rv;
+    rv_membus_state_t bus;
+    rv_cpu_init(&rv, 0);
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    rv.bus = &bus;
+    rv_cpu_reset(&rv, 0x10000000);
+    /* ADDI x1, x0, 10 */
+    uint32_t prog[] = {
+        0x00A00093,  /* addi x1, x0, 10 */
+        0x01400113,  /* addi x2, x0, 20 */
+        0x002081B3,  /* add  x3, x1, x2 */
+        0x40208233,  /* sub  x4, x1, x2 */
+    };
+    memcpy(&cpu.flash[0], prog, sizeof(prog));
+    rv_cpu_step(&rv); rv_cpu_step(&rv); rv_cpu_step(&rv); rv_cpu_step(&rv);
+    ASSERT_EQ(10, rv.x[1], "x1 = 10");
+    ASSERT_EQ(20, rv.x[2], "x2 = 20");
+    ASSERT_EQ(30, rv.x[3], "x3 = x1 + x2 = 30");
+    ASSERT_EQ((uint32_t)-10, rv.x[4], "x4 = x1 - x2 = -10");
+    PASS();
+}
+
+TEST(test_rv_branch_beq) {
+    rv_cpu_state_t rv;
+    rv_membus_state_t bus;
+    rv_cpu_init(&rv, 0);
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    rv.bus = &bus;
+    rv_cpu_reset(&rv, 0x10000000);
+    uint32_t prog[] = {
+        0x00000093,  /* addi x1, x0, 0 */
+        0x00108463,  /* beq  x1, x1, +8 (skip next) */
+        0x06400093,  /* addi x1, x0, 100 (should be skipped) */
+        0x0C800093,  /* addi x1, x0, 200 (branch target) */
+    };
+    memcpy(&cpu.flash[0], prog, sizeof(prog));
+    rv_cpu_step(&rv); rv_cpu_step(&rv); rv_cpu_step(&rv);
+    ASSERT_EQ(200, rv.x[1], "x1 should be 200 (branch taken, skipped 100)");
+    PASS();
+}
+
+TEST(test_rv_load_store) {
+    rv_cpu_state_t rv;
+    rv_membus_state_t bus;
+    rv_cpu_init(&rv, 0);
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    rv.bus = &bus;
+    rv_cpu_reset(&rv, 0x10000000);
+    /* Use SW/LW for reliable word-level store/load test */
+    uint32_t prog[] = {
+        0x200000B7,  /* lui  x1, 0x20000 (x1=0x20000000, SRAM base) */
+        0x0FF00113,  /* addi x2, x0, 255 */
+        0x0020A023,  /* sw   x2, 0(x1) — store word */
+        0x0000A183,  /* lw   x3, 0(x1) — load word */
+    };
+    memcpy(&cpu.flash[0], prog, sizeof(prog));
+    for (int i = 0; i < 4; i++) rv_cpu_step(&rv);
+    ASSERT_EQ(0x20000000, rv.x[1], "x1 should be SRAM base");
+    ASSERT_EQ(255, rv.x[2], "x2 should be 255");
+    ASSERT_EQ(255, rv.x[3], "x3 should be 255 after SW+LW roundtrip");
+    PASS();
+}
+
+TEST(test_rv_mul_div) {
+    rv_cpu_state_t rv;
+    rv_membus_state_t bus;
+    rv_cpu_init(&rv, 0);
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    rv.bus = &bus;
+    rv_cpu_reset(&rv, 0x10000000);
+    uint32_t prog[] = {
+        0x00700093,  /* addi x1, x0, 7 */
+        0x00600113,  /* addi x2, x0, 6 */
+        0x022081B3,  /* mul  x3, x1, x2 */
+        0x02208233,  /* mulh x4, x1, x2 (signed high) */
+        0x022042B3,  /* div  x5, x0, x2 (0/6=0) */
+        0x02204333,  /* div  x6, x0, x2... actually let's do x1/x2 */
+    };
+    /* Fix: div x5, x1, x2 = 7/6 = 1 */
+    prog[4] = 0x0220C2B3;  /* div x5, x1, x2 */
+    memcpy(&cpu.flash[0], prog, sizeof(prog));
+    for (int i = 0; i < 5; i++) rv_cpu_step(&rv);
+    ASSERT_EQ(42, rv.x[3], "7 * 6 = 42");
+    ASSERT_EQ(1, rv.x[5], "7 / 6 = 1");
+    PASS();
+}
+
+TEST(test_rv_jal_jalr) {
+    rv_cpu_state_t rv;
+    rv_membus_state_t bus;
+    rv_cpu_init(&rv, 0);
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    rv.bus = &bus;
+    rv_cpu_reset(&rv, 0x10000000);
+    uint32_t prog[] = {
+        0x008000EF,  /* jal x1, +8 (link to x1, jump to PC+8) */
+        0x00000013,  /* nop (addi x0, x0, 0) */
+        0x06400113,  /* addi x2, x0, 100 (target: x2=100) */
+    };
+    memcpy(&cpu.flash[0], prog, sizeof(prog));
+    rv_cpu_step(&rv);  /* JAL: x1=PC+4, PC=PC+8 */
+    ASSERT_EQ(0x10000004, rv.x[1], "x1 should be return address (PC+4)");
+    ASSERT_EQ(0x10000008, rv.pc, "PC should be at JAL target");
+    rv_cpu_step(&rv);  /* ADDI x2, x0, 100 */
+    ASSERT_EQ(100, rv.x[2], "x2 should be 100");
+    PASS();
+}
+
+TEST(test_rv_compressed_c_addi) {
+    rv_cpu_state_t rv;
+    rv_membus_state_t bus;
+    rv_cpu_init(&rv, 0);
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    rv.bus = &bus;
+    rv_cpu_reset(&rv, 0x10000000);
+    /* C.LI rd, imm: 010 imm[5] rd[4:0] imm[4:0] 01
+     * C.LI x1, 5: 010 0 00001 00101 01 = 0x4095 */
+    uint16_t c_li = 0x4095;
+    /* C.ADDI rd, nzimm: 000 nzimm[5] rd[4:0] nzimm[4:0] 01
+     * C.ADDI x1, 10: 000 0 00001 01010 01 = 0x00A9 */
+    uint16_t c_addi = 0x00A9;
+    memcpy(&cpu.flash[0], &c_li, 2);
+    memcpy(&cpu.flash[2], &c_addi, 2);
+    rv_cpu_step(&rv);  /* C.LI x1, 5 */
+    ASSERT_EQ(5, rv.x[1], "x1 should be 5 after C.LI");
+    ASSERT_EQ(0x10000002, rv.pc, "PC should advance by 2 (compressed)");
+    rv_cpu_step(&rv);  /* C.ADDI x1, 10 */
+    ASSERT_EQ(15, rv.x[1], "x1 should be 15 after C.ADDI x1, 10");
+    PASS();
+}
+
+TEST(test_rv_csr_mhartid) {
+    rv_cpu_state_t rv;
+    rv_cpu_init(&rv, 0);
+    ASSERT_EQ(0, rv_csr_read(&rv, CSR_MHARTID), "Hart 0 mhartid should be 0");
+    rv_cpu_init(&rv, 1);
+    ASSERT_EQ(1, rv_csr_read(&rv, CSR_MHARTID), "Hart 1 mhartid should be 1");
+    PASS();
+}
+
+TEST(test_rv_trap_enter_return) {
+    rv_cpu_state_t rv;
+    rv_cpu_init(&rv, 0);
+    rv_cpu_reset(&rv, 0x10000100);
+    rv.csr[CSR_MSTATUS] |= MSTATUS_MIE;  /* Enable interrupts */
+    rv.csr[CSR_MTVEC] = 0x10000200;       /* Direct mode */
+    rv_trap_enter(&rv, MCAUSE_ILLEGAL_INSTR, 0xDEADBEEF);
+    ASSERT_EQ(0x10000100, rv.csr[CSR_MEPC], "MEPC should be saved PC");
+    ASSERT_EQ(MCAUSE_ILLEGAL_INSTR, rv.csr[CSR_MCAUSE], "MCAUSE should be illegal instr");
+    ASSERT_EQ(0xDEADBEEF, rv.csr[CSR_MTVAL], "MTVAL should be tval");
+    ASSERT_EQ(0x10000200, rv.pc, "PC should be at mtvec");
+    ASSERT_TRUE(!(rv.csr[CSR_MSTATUS] & MSTATUS_MIE), "MIE should be cleared");
+    ASSERT_TRUE(rv.csr[CSR_MSTATUS] & MSTATUS_MPIE, "MPIE should be set (was enabled)");
+    rv_trap_return(&rv);
+    ASSERT_EQ(0x10000100, rv.pc, "PC should be restored to MEPC");
+    ASSERT_TRUE(rv.csr[CSR_MSTATUS] & MSTATUS_MIE, "MIE should be restored from MPIE");
+    PASS();
+}
+
+TEST(test_rv_clint_timer) {
+    rv_clint_state_t clint;
+    rv_clint_init(&clint, 1);
+    ASSERT_EQ(0, clint.mtime, "mtime should start at 0");
+    rv_clint_tick(&clint, 1);
+    ASSERT_EQ(1, clint.mtime, "mtime should be 1 after 1 tick");
+    rv_clint_tick(&clint, 99);
+    ASSERT_EQ(100, clint.mtime, "mtime should be 100 after 100 ticks");
+    PASS();
+}
+
+TEST(test_rv_clint_timer_interrupt) {
+    rv_clint_state_t clint;
+    rv_cpu_state_t rv;
+    rv_clint_init(&clint, 1);
+    rv_cpu_init(&rv, 0);
+    rv_cpu_reset(&rv, 0x10000000);
+    rv.csr[CSR_MSTATUS] |= MSTATUS_MIE;
+    rv.csr[CSR_MIE] = (1u << 7);  /* Enable MTIE */
+    rv.csr[CSR_MTVEC] = 0x10000100;
+    clint.mtimecmp[0] = 50;
+    /* Tick past the compare */
+    rv_clint_tick(&clint, 50);
+    int delivered = rv_clint_check_interrupts(&clint, &rv);
+    ASSERT_EQ(1, delivered, "Timer interrupt should be delivered");
+    ASSERT_EQ(0x10000100, rv.pc, "PC should be at mtvec handler");
+    PASS();
+}
+
+TEST(test_rv_membus_sram) {
+    rv_membus_state_t bus;
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    rv_mem_write32(&bus, 0x20000000, 0xDEADBEEF);
+    ASSERT_EQ(0xDEADBEEF, rv_mem_read32(&bus, 0x20000000), "SRAM write/read");
+    rv_mem_write8(&bus, 0x20000010, 0x42);
+    ASSERT_EQ(0x42, rv_mem_read8(&bus, 0x20000010), "SRAM byte write/read");
+    /* Alias */
+    rv_mem_write32(&bus, 0x21000000, 0x12345678);
+    ASSERT_EQ(0x12345678, rv_mem_read32(&bus, 0x20000000 + 0), "SRAM alias should mirror");
+    PASS();
+}
+
+TEST(test_rv_bootrom_init) {
+    rv_membus_state_t bus;
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    uint32_t entry = rv_bootrom_init(bus.rom, bus.rom_size, 0x10000000, 0x20082000);
+    ASSERT_EQ(0x00000000, entry, "Entry should be ROM address 0");
+    /* Check magic */
+    ASSERT_EQ('R', bus.rom[0x10], "ROM magic[0] should be 'R'");
+    ASSERT_EQ('P', bus.rom[0x11], "ROM magic[1] should be 'P'");
+    ASSERT_EQ(0x02, bus.rom[0x12], "ROM magic[2] should be 0x02");
+    PASS();
+}
+
+TEST(test_rv_icache) {
+    rv_icache_t cache;
+    rv_icache_init(&cache);
+    uint32_t instr; uint8_t size;
+    ASSERT_EQ(0, rv_icache_lookup(&cache, 0x10000000, &instr, &size), "Should miss on empty");
+    rv_icache_insert(&cache, 0x10000000, 0xDEADBEEF, 4);
+    ASSERT_EQ(1, rv_icache_lookup(&cache, 0x10000000, &instr, &size), "Should hit after insert");
+    ASSERT_EQ(0xDEADBEEF, instr, "Cached instruction should match");
+    ASSERT_EQ(4, size, "Size should be 4");
+    PASS();
+}
+
+TEST(test_rv_periph_bootram) {
+    rp2350_periph_state_t periph;
+    rp2350_periph_init(&periph);
+    rp2350_periph_write8(&periph, 0x400E0000, 0x42);
+    ASSERT_EQ(0x42, rp2350_periph_read8(&periph, 0x400E0000), "BOOTRAM byte access");
+    rp2350_periph_write32(&periph, 0x400E0010, 0xCAFEBABE);
+    ASSERT_EQ(0xCAFEBABE, rp2350_periph_read32(&periph, 0x400E0010), "BOOTRAM word access");
+    PASS();
+}
+
+TEST(test_rv_periph_timer1) {
+    rp2350_periph_state_t periph;
+    rp2350_periph_init(&periph);
+    /* Write alarm and tick */
+    rp2350_periph_write32(&periph, 0x400B8010, 100);  /* ALARM0 = 100 */
+    ASSERT_EQ(1, periph.timer1.armed & 1, "Alarm 0 should be armed");
+    rp2350_timer1_tick(&periph, 100);
+    ASSERT_TRUE(periph.timer1.intr & 1, "Alarm 0 should fire at 100us");
+    ASSERT_EQ(0, periph.timer1.armed & 1, "Alarm 0 should disarm after firing");
+    PASS();
+}
+
+TEST(test_rv_hazard3_csrs) {
+    rv_cpu_state_t rv;
+    rv_membus_state_t bus;
+    rv_cpu_init(&rv, 0);
+    rv_membus_init(&bus, cpu.flash, FLASH_SIZE, 1);
+    rv.bus = &bus;
+    /* Write meie0 — should update CLINT ext_enable */
+    rv_csr_write(&rv, CSR_MEIE0, 0x000000FF);
+    ASSERT_EQ(0x000000FF, rv.csr[CSR_MEIE0], "MEIE0 should be written");
+    ASSERT_EQ(0x000000FF, (uint32_t)(bus.clint.ext_enable[0] & 0xFFFFFFFF), "CLINT ext_enable should reflect MEIE0");
+    /* Read mlei with no pending — should return 0xFFFFFFFF */
+    ASSERT_EQ(0xFFFFFFFF, rv_csr_read(&rv, CSR_MLEI), "MLEI should be 0xFFFFFFFF with no pending");
+    /* Set ext pending and check mlei */
+    rv_clint_set_ext_pending(&bus.clint, 3);
+    ASSERT_EQ(3, rv_csr_read(&rv, CSR_MLEI), "MLEI should be 3 (lowest pending enabled)");
+    PASS();
+}
+
+/* ========================================================================
  * Main Entry Point
  * ======================================================================== */
 
@@ -4306,6 +4637,41 @@ int main(void) {
     BEGIN_CATEGORY("Wire Protocol");
     RUN_TEST(test_wire_poll_handles_partial_uart_frame);
     END_CATEGORY("Wire Protocol");
+
+    BEGIN_CATEGORY("RISC-V CPU");
+    RUN_TEST(test_rv_cpu_init);
+    RUN_TEST(test_rv_cpu_reset);
+    RUN_TEST(test_rv_addi_instruction);
+    RUN_TEST(test_rv_lui_instruction);
+    RUN_TEST(test_rv_add_sub);
+    RUN_TEST(test_rv_branch_beq);
+    RUN_TEST(test_rv_load_store);
+    RUN_TEST(test_rv_mul_div);
+    RUN_TEST(test_rv_jal_jalr);
+    RUN_TEST(test_rv_compressed_c_addi);
+    RUN_TEST(test_rv_csr_mhartid);
+    RUN_TEST(test_rv_trap_enter_return);
+    END_CATEGORY("RISC-V CPU");
+
+    BEGIN_CATEGORY("RISC-V CLINT");
+    RUN_TEST(test_rv_clint_timer);
+    RUN_TEST(test_rv_clint_timer_interrupt);
+    END_CATEGORY("RISC-V CLINT");
+
+    BEGIN_CATEGORY("RISC-V Memory Bus");
+    RUN_TEST(test_rv_membus_sram);
+    RUN_TEST(test_rv_bootrom_init);
+    END_CATEGORY("RISC-V Memory Bus");
+
+    BEGIN_CATEGORY("RISC-V ICache");
+    RUN_TEST(test_rv_icache);
+    END_CATEGORY("RISC-V ICache");
+
+    BEGIN_CATEGORY("RP2350 Peripherals");
+    RUN_TEST(test_rv_periph_bootram);
+    RUN_TEST(test_rv_periph_timer1);
+    RUN_TEST(test_rv_hazard3_csrs);
+    END_CATEGORY("RP2350 Peripherals");
 
     printf("\n========================================\n");
     printf(" Results: %d/%d passed, %d failed\n", tests_passed, tests_run, tests_failed);

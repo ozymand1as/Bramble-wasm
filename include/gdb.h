@@ -109,4 +109,9 @@ int gdb_handle(void);
 int gdb_check_watchpoint_write(uint32_t addr, uint32_t size);
 int gdb_check_watchpoint_read(uint32_t addr, uint32_t size);
 
+/* RISC-V GDB support */
+#include "rp2350_rv/rv_cpu.h"
+extern rv_cpu_state_t *gdb_rv_harts[2];
+extern int gdb_is_riscv;
+
 #endif /* GDB_H */

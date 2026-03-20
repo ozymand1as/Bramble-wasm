@@ -38,6 +38,11 @@
 
 #include "gdb.h"
 #include "emulator.h"
+#include "rp2350_rv/rv_cpu.h"
+
+/* RISC-V GDB support: external hart state pointers (set by main.c when -arch rv32) */
+rv_cpu_state_t *gdb_rv_harts[2] = { NULL, NULL };
+int gdb_is_riscv = 0;
 
 gdb_state_t gdb;
 
@@ -201,6 +206,16 @@ static int gdb_recv_packet(char *out, int max_len) {
 static uint32_t gdb_read_reg(int reg) {
     int core = gdb.g_thread;
     if (core < 0 || core >= NUM_CORES) core = 0;
+
+    if (gdb_is_riscv && gdb_rv_harts[core]) {
+        /* RISC-V: 33 registers (x0-x31 + PC) */
+        rv_cpu_state_t *h = gdb_rv_harts[core];
+        if (reg >= 0 && reg <= 31) return h->x[reg];
+        if (reg == 32) return h->pc;
+        return 0;
+    }
+
+    /* ARM: 17 registers (R0-R15 + xPSR) */
     if (reg >= 0 && reg <= 15) return cores[core].r[reg];
     if (reg == 16) return cores[core].xpsr;
     return 0;
@@ -209,11 +224,21 @@ static uint32_t gdb_read_reg(int reg) {
 static void gdb_write_reg(int reg, uint32_t val) {
     int core = gdb.g_thread;
     if (core < 0 || core >= NUM_CORES) core = 0;
+
+    if (gdb_is_riscv && gdb_rv_harts[core]) {
+        rv_cpu_state_t *h = gdb_rv_harts[core];
+        if (reg >= 1 && reg <= 31) h->x[reg] = val;  /* x0 is hardwired to 0 */
+        if (reg == 32) h->pc = val;
+        return;
+    }
+
     if (reg >= 0 && reg <= 15) cores[core].r[reg] = val;
     if (reg == 16) cores[core].xpsr = val;
 }
 
-#define GDB_NUM_REGS 17
+#define GDB_NUM_REGS_ARM  17
+#define GDB_NUM_REGS_RV   33
+#define GDB_NUM_REGS      (gdb_is_riscv ? GDB_NUM_REGS_RV : GDB_NUM_REGS_ARM)
 
 /* ========================================================================
  * Condition Evaluation
@@ -411,16 +436,18 @@ static void handle_query(const char *pkt) {
 }
 
 static void handle_read_registers(void) {
-    char resp[GDB_NUM_REGS * 8 + 1];
-    for (int i = 0; i < GDB_NUM_REGS; i++) {
+    int nregs = gdb_is_riscv ? GDB_NUM_REGS_RV : GDB_NUM_REGS_ARM;
+    char resp[GDB_NUM_REGS_RV * 8 + 1];  /* Max size (RV: 33*8 = 264) */
+    for (int i = 0; i < nregs; i++) {
         u32_to_hex_le(gdb_read_reg(i), resp + i * 8);
     }
-    resp[GDB_NUM_REGS * 8] = '\0';
+    resp[nregs * 8] = '\0';
     gdb_send_packet(resp);
 }
 
 static void handle_write_registers(const char *data) {
-    for (int i = 0; i < GDB_NUM_REGS && data[i * 8]; i++) {
+    int nregs = gdb_is_riscv ? GDB_NUM_REGS_RV : GDB_NUM_REGS_ARM;
+    for (int i = 0; i < nregs && data[i * 8]; i++) {
         gdb_write_reg(i, hex_le_to_u32(data + i * 8));
     }
     gdb_send_packet("OK");

@@ -2,9 +2,9 @@
 
 A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, supporting both ARM Cortex-M0+ (Thumb) and RISC-V Hazard3 (RV32IMAC) cores. Loads and executes UF2 and ELF firmware with accurate memory mapping and peripheral emulation.
 
-## Current Status: v0.39.0
+## Current Status: v0.40.0
 
-276 tests passing (zero warnings). **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Complete Hazard3 emulation — RV32IMAC ISA + Hazard3 custom CSRs + CLINT + 520KB SRAM + 32KB ROM + bootrom + dual-hart + all RP2350 peripherals (TICKS, POWMAN, QMI, OTP, BOOTRAM, TIMER1, PIO2, 48 GPIO, GLITCH, CORESIGHT, ACCESSCTRL) + instruction cache + semihosting + stack protection. **RP2350 ARM**: Placeholder (Cortex-M33 not yet implemented).
+296 tests passing (zero warnings). **RP2040**: Complete — boots MicroPython, CircuitPython, littleOS. **RP2350 RISC-V**: Complete Hazard3 emulation — RV32IMAC ISA + Hazard3 CSRs + CLINT + SDK-compatible bootrom (ROM function table + interception) + RISC-V GDB + 4MB flash + 520KB SRAM + dual-hart + all RP2350 peripherals + icache + semihosting + 20 RV unit tests. **RP2350 ARM**: Placeholder (Cortex-M33 not yet implemented).
 
 ### Coverage
 
@@ -28,7 +28,7 @@ A from-scratch emulator for Raspberry Pi RP2040 and RP2350 microcontrollers, sup
 | Firmware Auto-Detect | UF2 + ELF | Auto-detects RP2040/RP2350-ARM/RP2350-RV from UF2 family ID or ELF machine type |
 | RV Performance | ICache | 64K-entry decoded instruction cache for flash/ROM fetches |
 | RV Semihosting | EBREAK | EBREAK with a0=0x20026 triggers SYS_EXIT |
-| Tests | 276 | CTest integrated, 50+ categories |
+| Tests | 296 | CTest integrated, 55+ categories (includes 20 RISC-V tests) |
 
 ### Peripherals
 

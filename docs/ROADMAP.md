@@ -1,6 +1,6 @@
 # Bramble RP2040/RP2350 Emulator - Roadmap
 
-## Current State: v0.39.0
+## Current State: v0.40.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
@@ -18,19 +18,20 @@
 | Threading | Host-threaded | pthread-per-core, WFI sleep, dynamic core allocation, multi-instance pool |
 | Privilege | Auto-sudo | `-tap` and `-mount` auto-escalate via sudo when needed |
 | Dev Tools | 18 tools | Semihosting (ARM+RV), coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus log, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |
-| Validation | 276 tests | Loader hardening, core pool, wire transport, watchdog reset, console routing, memory-map aliases, exception-path, and multicore reboot coverage |
+| Validation | 296 tests | 276 RP2040 + 20 RISC-V tests covering CPU, CLINT, membus, icache, peripherals |
 
-### Recent Changes (v0.39.0)
+### Recent Changes (v0.40.0)
 
-- **Hazard3 custom CSRs**: meie0/meie1 (ext IRQ enable), meip0/meip1 (ext IRQ pending), mlei (lowest pending), meiea/meipa/meifa/meicontext, mstack_base/mstack_limit.
-- **RP2350 peripheral module**: TICKS (9 generators), POWMAN (VREG/BOD/AON timer), QMI (flash interface), OTP (8192-row data), BOOTRAM (256B), TIMER1, TIMER0 address redirect, GLITCH, CORESIGHT, ACCESSCTRL.
-- **PIO2**: Third PIO block at 0x50400000, PIO_NUM_BLOCKS=3.
-- **48-pin GPIO**: NUM_GPIO_PINS expanded to 48, interrupt register arrays to 6.
-- **RP2350 SIO**: CPUID=RP2350, GPIO_HI for pins 32-47, hart 1 launch mailbox (entry/SP/arg at 0xD00001C0).
-- **Hart 1 launch protocol**: SIO mailbox write triggers hart 1 reset with specified entry/SP/a0.
-- **RV instruction cache**: 64K-entry decoded cache for flash/ROM fetches, 100% hit rate on tight loops.
-- **RV semihosting**: EBREAK with a0=0x20026 triggers SYS_EXIT.
-- **Hardware stack protection**: mstack_base/mstack_limit CSRs.
+- **SDK-compatible ROM function table**: 9 ROM functions (memcpy, memset, popcount, clz, ctz, reverse, flash erase/program, reboot) at well-known addresses, intercepted natively by `rv_rom_intercept()`. ROM lookup function at 0x0300 (RISC-V code). 'RP\x02' magic header.
+- **RISC-V GDB stub**: Architecture-aware register access — 33 registers (x0-x31 + PC) for RV32, 17 registers (R0-R15 + xPSR) for ARM. Hart pointers wired from main execution loop.
+- **4MB flash**: Static flash array expanded to 4MB (`FLASH_SIZE_MAX`) for RP2350 Pico 2 compatibility.
+- **20 RISC-V unit tests**: CPU (ADDI, LUI, ADD/SUB, BEQ, SW/LW, MUL/DIV, JAL/JALR, C.LI/C.ADDI, CSR, trap), CLINT (timer, interrupt delivery), membus (SRAM, bootrom), icache, peripherals (BOOTRAM, TIMER1, Hazard3 CSRs).
+
+### Previous (v0.39.0)
+
+- **Hazard3 custom CSRs**: meie0/meie1, meip0/meip1, mlei, mstack_base/mstack_limit.
+- **RP2350 peripheral module**: TICKS, POWMAN, QMI, OTP, BOOTRAM, TIMER1, GLITCH, CORESIGHT, ACCESSCTRL.
+- **PIO2, 48-pin GPIO, RP2350 SIO, hart 1 launch, RV icache, RV semihosting.**
 
 ### Previous (v0.38.0)
 

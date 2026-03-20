@@ -28,7 +28,11 @@
  * ======================================================================== */
 
 #define FLASH_BASE      0x10000000
-#define FLASH_SIZE      (2 * 1024 * 1024)    /* 2 MB XIP flash */
+#define FLASH_SIZE_2MB  (2 * 1024 * 1024)    /* RP2040: 2 MB XIP flash */
+#define FLASH_SIZE_4MB  (4 * 1024 * 1024)    /* RP2350: 4 MB XIP flash (Pico 2 default) */
+#define FLASH_SIZE_16MB (16 * 1024 * 1024)   /* RP2350: 16 MB max */
+#define FLASH_SIZE_MAX  FLASH_SIZE_4MB       /* Max static allocation */
+#define FLASH_SIZE      FLASH_SIZE_2MB       /* Default (RP2040 compat) */
 #define RAM_BASE        0x20000000
 #define RAM_SIZE        (264 * 1024)         /* 264 KB on-chip SRAM */
 #define RAM_TOP         (RAM_BASE + RAM_SIZE)
@@ -89,7 +93,7 @@ uint32_t timing_instruction_cycles_32(uint16_t upper, uint16_t lower);
 
 typedef struct {
     /* Memory */
-    uint8_t flash[FLASH_SIZE];      /* Instruction & data flash */
+    uint8_t flash[FLASH_SIZE_MAX];  /* Instruction & data flash (4MB for RP2350 compat) */
     uint8_t ram[RAM_SIZE];          /* On-chip SRAM */
 
     /* Registers */

@@ -1045,6 +1045,11 @@ skip_fuse:
         rv_cpu_init(&rv_cores[0], 0);
         rv_cpu_init(&rv_cores[1], 1);
 
+        /* Set up RISC-V GDB support */
+        gdb_rv_harts[0] = &rv_cores[0];
+        gdb_rv_harts[1] = &rv_cores[1];
+        gdb_is_riscv = 1;
+
         /* Attach memory bus and icache to both harts */
         rv_cores[0].bus = &rv_bus;
         rv_cores[1].bus = &rv_bus;
@@ -1062,12 +1067,16 @@ skip_fuse:
 
         while (!rv_cpu_is_halted(&rv_cores[0])) {
             /* Step hart 0 */
-            if (!rv_cores[0].is_wfi)
-                rv_cpu_step(&rv_cores[0]);
+            if (!rv_cores[0].is_wfi) {
+                if (!rv_rom_intercept(&rv_cores[0]))
+                    rv_cpu_step(&rv_cores[0]);
+            }
 
             /* Step hart 1 if active */
-            if (!rv_cores[1].is_halted && !rv_cores[1].is_wfi)
-                rv_cpu_step(&rv_cores[1]);
+            if (!rv_cores[1].is_halted && !rv_cores[1].is_wfi) {
+                if (!rv_rom_intercept(&rv_cores[1]))
+                    rv_cpu_step(&rv_cores[1]);
+            }
 
             step_count++;
 
