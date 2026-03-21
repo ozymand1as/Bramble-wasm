@@ -898,6 +898,19 @@ void instr_msr_32(uint8_t rn, uint8_t sysm) {
         case 0x10: /* PRIMASK */
             cpu.primask = val & 1;
             break;
+        case 0x11: /* BASEPRI (M33/M4 only) */
+        case 0x12: /* BASEPRI_MAX — write only if new value > current */
+        {
+            extern uint32_t m33_basepri;
+            if (sysm == 0x12) {
+                /* BASEPRI_MAX: only increase the threshold */
+                if ((val & 0xFF) > m33_basepri || m33_basepri == 0)
+                    m33_basepri = val & 0xFF;
+            } else {
+                m33_basepri = val & 0xFF;
+            }
+            break;
+        }
         case 0x13: /* FAULTMASK */
             cpu.faultmask = val & 1;
             break;
@@ -942,6 +955,13 @@ void instr_mrs_32(uint8_t rd, uint8_t sysm) {
         case 0x10: /* PRIMASK */
             val = cpu.primask;
             break;
+        case 0x11: /* BASEPRI (M33/M4 only) */
+        case 0x12: /* BASEPRI_MAX */
+        {
+            extern uint32_t m33_basepri;
+            val = m33_basepri;
+            break;
+        }
         case 0x13: /* FAULTMASK */
             val = cpu.faultmask;
             break;

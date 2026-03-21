@@ -1,5 +1,54 @@
 # Bramble RP2040/RP2350 Emulator - Changelog
 
+## [0.42.0] - 2026-03-20
+
+### Added - Picobin Boot, Real Pico 2 Firmware Support
+
+- **Picobin IMAGE_DEF parser** (`picobin.c`): Scans first 4KB of flash for RP2350 picobin blocks (magic `0xFFFFDED3`). Parses IMAGE_TYPE (ARM/RISC-V, RP2040/RP2350), ENTRY_POINT (PC + SP), and VECTOR_TABLE items. Firmware entry point and stack pointer extracted automatically from the picobin block.
+- **Real Pico 2 RISC-V firmware tested**: MicroPython v1.27.0 for RPI_PICO2-RISCV successfully loads and begins execution. Picobin block at flash offset 0x0014 identified as RISC-V/RP2350, entry PC=0x10000036, SP=0x20082000. 416 instructions execute through boot code before entering WFI wait state.
+- **UF2 loader expanded to 4MB**: Bounds check uses `FLASH_SIZE_MAX` (4MB) instead of `FLASH_SIZE` (2MB), allowing RP2350 firmware with blocks up to 4MB offset to load.
+
+### Files Added
+
+- `include/rp2350_rv/picobin.h` — Picobin block format definitions and parser API
+- `src/rp2350_rv/picobin.c` — Picobin IMAGE_DEF scanner and item parser
+
+### Tests
+
+- 300 tests passing, zero warnings.
+
+---
+
+## [0.41.0] - 2026-03-20
+
+### Added - Cortex-M33 Support (`-arch m33`), Complete RP2350 Dual-Architecture
+
+- **Cortex-M33 CPU mode** (`-arch m33`): RP2350 ARM mode using the existing Thumb-2 engine (cpu.c + instructions.c + thumb32.c) with M33-specific overlay. Reuses all existing instruction handlers — M33 is a superset of M0+.
+- **M33 CPUID**: SCB at 0xE000ED00 returns Cortex-M33 identifier (0x410FD210) instead of M0+ (0x410CC601). `nvic_cpuid_value` variable allows runtime switching.
+- **BASEPRI register**: MSR/MRS support for SYSm=0x11 (BASEPRI) and SYSm=0x12 (BASEPRI_MAX). BASEPRI_MAX only increases the threshold (write-if-greater semantics).
+- **M33 auto-detection**: UF2 family ID 0xE48BFF59 (RP2350-ARM) auto-selects `-arch m33` mode.
+- **Architecture enum extended**: `ARCH_M33` added alongside `ARCH_M0PLUS` and `ARCH_RV32`.
+- **4 Cortex-M33 unit tests**: CPUID switching, BASEPRI read/write/BASEPRI_MAX semantics, SDIV instruction, MOVW instruction.
+- **Complete tri-architecture support**: `-arch m0+` (RP2040), `-arch m33` (RP2350 ARM), `-arch rv32` (RP2350 RISC-V). All three share the same peripheral infrastructure.
+
+### Files Added
+
+- `src/rp2350_arm/m33_cpu.c` — M33 overlay initialization (BASEPRI, CPUID)
+
+### Changed
+
+- `include/rp2350_arm/m33_cpu.h` — Full M33 header with BASEPRI API, CPUID constant
+- `include/nvic.h` — Added `nvic_cpuid_value` extern
+- `src/nvic.c` — CPUID register returns `nvic_cpuid_value` (runtime-configurable)
+- `src/instructions.c` — MSR/MRS handlers support BASEPRI (SYSm 0x11) and BASEPRI_MAX (SYSm 0x12)
+- `src/main.c` — ARCH_M33 enum, `-arch m33` flag, M33 auto-detection, M33 banner, m33_init_overlay() call
+
+### Tests
+
+- 300 tests passing (4 new M33 tests), zero warnings.
+
+---
+
 ## [0.40.0] - 2026-03-20
 
 ### Added - SDK-Compatible Bootrom, RISC-V GDB, 4MB Flash, 20 RV Tests

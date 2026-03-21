@@ -5,6 +5,9 @@
 #include "corepool.h"
 #include "devtools.h"
 
+/* CPUID value (M0+ default, M33 overlay changes this) */
+uint32_t nvic_cpuid_value = 0x410CC601;  /* Cortex-M0+ default */
+
 /* Per-core NVIC state (RP2040 has independent NVIC per core) */
 nvic_state_t nvic_states[2] = {{0}};
 
@@ -341,7 +344,7 @@ uint32_t nvic_read_register(uint32_t addr) {
             return cpu.vtor;
 
         case SCB_BASE:  /* 0xE000ED00 - CPUID */
-            return 0x410CC601;
+            return nvic_cpuid_value;
 
         case SCB_AIRCR:
             return 0x05FA0000;

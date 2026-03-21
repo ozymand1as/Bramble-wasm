@@ -44,6 +44,8 @@
 #include "rp2350_rv/rv_bootrom.h"
 #include "rp2350_rv/rp2350_periph.h"
 #include "rp2350_rv/rv_icache.h"
+#include "rp2350_arm/m33_cpu.h"
+#include "thumb32.h"
 
 /* ========================================================================
  * Test Framework (Verbose)
@@ -3843,6 +3845,75 @@ TEST(test_wire_poll_handles_partial_uart_frame) {
 }
 
 /* ========================================================================
+ * Cortex-M33 Tests
+ * ======================================================================== */
+
+TEST(test_m33_cpuid) {
+    reset_cpu();
+    /* Default should be M0+ CPUID */
+    uint32_t cpuid = nvic_read_register(0xE000ED00);
+    ASSERT_EQ(0x410CC601, cpuid, "Default CPUID should be Cortex-M0+");
+    /* Switch to M33 */
+    nvic_cpuid_value = 0x410FD210;
+    cpuid = nvic_read_register(0xE000ED00);
+    ASSERT_EQ(0x410FD210, cpuid, "M33 CPUID should be 0x410FD210");
+    /* Restore */
+    nvic_cpuid_value = 0x410CC601;
+    PASS();
+}
+
+TEST(test_m33_basepri) {
+    reset_cpu();
+    extern uint32_t m33_basepri;
+    m33_basepri = 0;
+    /* MSR BASEPRI, R0 (SYSm=0x11) — set BASEPRI to 0x40 */
+    cpu.r[0] = 0x40;
+    instr_msr_32(0, 0x11);
+    ASSERT_EQ(0x40, m33_basepri, "BASEPRI should be set to 0x40");
+    /* MRS R1, BASEPRI (SYSm=0x11) */
+    instr_mrs_32(1, 0x11);
+    ASSERT_EQ(0x40, cpu.r[1], "MRS BASEPRI should read 0x40");
+    /* BASEPRI_MAX: only increases threshold */
+    cpu.r[0] = 0x20;
+    instr_msr_32(0, 0x12);  /* BASEPRI_MAX */
+    ASSERT_EQ(0x40, m33_basepri, "BASEPRI_MAX with lower value should not decrease");
+    cpu.r[0] = 0x80;
+    instr_msr_32(0, 0x12);
+    ASSERT_EQ(0x80, m33_basepri, "BASEPRI_MAX with higher value should increase");
+    m33_basepri = 0;
+    PASS();
+}
+
+TEST(test_m33_thumb2_sdiv) {
+    reset_cpu();
+    /* SDIV R0, R1, R2: R0 = R1 / R2 (signed) */
+    cpu.r[1] = 42;
+    cpu.r[2] = 7;
+    /* SDIV encoding: upper=0xFB91, lower=0xF0F2 (Rd=0, Rn=1, Rm=2) */
+    uint16_t upper = 0xFB91;
+    uint16_t lower = 0xF0F2;
+    uint32_t instr32 = ((uint32_t)upper << 16) | lower;
+    (void)instr32;
+    /* Call the 32-bit handler directly */
+    thumb32_step(0x10000100, upper, lower);
+    ASSERT_EQ(6, cpu.r[0], "42 / 7 = 6 (SDIV)");
+    PASS();
+}
+
+TEST(test_m33_thumb2_movw_movt) {
+    reset_cpu();
+    /* MOVW R0, #0x1234: upper=0xF241, lower=0x2034 */
+    /* MOVW: imm16 = i:imm4:imm3:imm8 */
+    /* MOVW R0, #0x0000 = F240 0000 */
+    thumb32_step(0x10000100, 0xF240, 0x0000);
+    ASSERT_EQ(0, cpu.r[0], "MOVW R0, #0 should set R0=0");
+    /* MOVW R0, #0x00FF = F240 00FF */
+    thumb32_step(0x10000100, 0xF240, 0x00FF);
+    ASSERT_EQ(0xFF, cpu.r[0], "MOVW R0, #0xFF should set R0=0xFF");
+    PASS();
+}
+
+/* ========================================================================
  * RISC-V Hazard3 Tests
  * ======================================================================== */
 
@@ -4637,6 +4708,13 @@ int main(void) {
     BEGIN_CATEGORY("Wire Protocol");
     RUN_TEST(test_wire_poll_handles_partial_uart_frame);
     END_CATEGORY("Wire Protocol");
+
+    BEGIN_CATEGORY("Cortex-M33");
+    RUN_TEST(test_m33_cpuid);
+    RUN_TEST(test_m33_basepri);
+    RUN_TEST(test_m33_thumb2_sdiv);
+    RUN_TEST(test_m33_thumb2_movw_movt);
+    END_CATEGORY("Cortex-M33");
 
     BEGIN_CATEGORY("RISC-V CPU");
     RUN_TEST(test_rv_cpu_init);

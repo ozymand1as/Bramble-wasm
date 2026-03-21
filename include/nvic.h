@@ -114,6 +114,9 @@ typedef struct {
     int priorities_nondefault;      /* Nonzero if any IRQ priority != 0 (enables fast CTZ path) */
 } nvic_state_t;
 
+/* CPUID value (set by architecture overlay) */
+extern uint32_t nvic_cpuid_value;
+
 /* Functions */
 void nvic_init(void);
 void nvic_reset(void);

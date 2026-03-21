@@ -1,11 +1,12 @@
 # Bramble RP2040/RP2350 Emulator - Roadmap
 
-## Current State: v0.40.0
+## Current State: v0.41.0
 
 | Category | Coverage | Notes |
 |----------|----------|-------|
 | RP2040 CPU | 65+ Thumb-1 | Full ARMv6-M instruction set + O(1) dispatch + JIT |
-| RP2350 RV | Complete | Hazard3: 93 RV32IMAC, Hazard3 CSRs (meie/meip/mlei), CLINT, icache, stack protection, semihosting |
+| RP2350 RV | Complete | Hazard3: 93 RV32IMAC, Hazard3 CSRs, CLINT, SDK bootrom, icache, GDB, semihosting, stack protection |
+| RP2350 ARM | Complete | Cortex-M33 (`-arch m33`): full Thumb-2 engine reuse, BASEPRI, M33 CPUID (0x410FD210), UF2 auto-detect |
 | RP2350 Peripherals | Complete | TICKS, POWMAN, QMI, OTP+data, BOOTRAM, TIMER1, PIO2, 48 GPIO, GLITCH, CORESIGHT, ACCESSCTRL |
 | Memory Map | 100% | RP2040: all regions. RP2350: 520KB SRAM + 32KB ROM + CLINT + all RP2350 peripherals + SIO with hart launch |
 | Peripherals | 100% | All 30 RP2040 peripherals + 11 RP2350-specific peripherals |
@@ -18,14 +19,22 @@
 | Threading | Host-threaded | pthread-per-core, WFI sleep, dynamic core allocation, multi-instance pool |
 | Privilege | Auto-sudo | `-tap` and `-mount` auto-escalate via sudo when needed |
 | Dev Tools | 18 tools | Semihosting (ARM+RV), coverage, hotspots, profile, trace, callgraph, VCD, IRQ latency, stack check, bus log, watch, expect, script, fault injection, heatmap, symbols, exit codes, timeouts |
-| Validation | 296 tests | 276 RP2040 + 20 RISC-V tests covering CPU, CLINT, membus, icache, peripherals |
+| Validation | 300 tests | 276 RP2040 + 20 RISC-V + 4 M33 tests |
 
-### Recent Changes (v0.40.0)
+### Recent Changes (v0.41.0)
 
-- **SDK-compatible ROM function table**: 9 ROM functions (memcpy, memset, popcount, clz, ctz, reverse, flash erase/program, reboot) at well-known addresses, intercepted natively by `rv_rom_intercept()`. ROM lookup function at 0x0300 (RISC-V code). 'RP\x02' magic header.
-- **RISC-V GDB stub**: Architecture-aware register access — 33 registers (x0-x31 + PC) for RV32, 17 registers (R0-R15 + xPSR) for ARM. Hart pointers wired from main execution loop.
-- **4MB flash**: Static flash array expanded to 4MB (`FLASH_SIZE_MAX`) for RP2350 Pico 2 compatibility.
-- **20 RISC-V unit tests**: CPU (ADDI, LUI, ADD/SUB, BEQ, SW/LW, MUL/DIV, JAL/JALR, C.LI/C.ADDI, CSR, trap), CLINT (timer, interrupt delivery), membus (SRAM, bootrom), icache, peripherals (BOOTRAM, TIMER1, Hazard3 CSRs).
+- **Cortex-M33 mode** (`-arch m33`): Full Thumb-2 engine reuse with M33 overlay (BASEPRI, CPUID). UF2 family ID auto-detection.
+- **BASEPRI register**: MSR/MRS support for SYSm 0x11 (BASEPRI) and 0x12 (BASEPRI_MAX, write-if-greater).
+- **M33 CPUID**: Runtime-configurable `nvic_cpuid_value` — M0+ (0x410CC601) or M33 (0x410FD210).
+- **Tri-architecture**: `-arch m0+` (RP2040), `-arch m33` (RP2350 ARM), `-arch rv32` (RP2350 RISC-V).
+- **4 M33 unit tests**: CPUID switching, BASEPRI read/write/MAX, SDIV, MOVW.
+
+### Previous (v0.40.0)
+
+- **SDK-compatible ROM function table**: 9 ROM functions intercepted natively. ROM lookup at 0x0300. 'RP\x02' header.
+- **RISC-V GDB stub**: 33-register layout for RV32, architecture-aware.
+- **4MB flash**: `FLASH_SIZE_MAX` for RP2350 compatibility.
+- **20 RISC-V unit tests**.
 
 ### Previous (v0.39.0)
 

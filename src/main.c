@@ -29,9 +29,11 @@
 #include "rp2350_rv/rv_icache.h"
 #include "rp2350_rv/rp2350_periph.h"
 #include "rp2350_rv/rp2350_memmap.h"
+#include "rp2350_rv/picobin.h"
+#include "rp2350_arm/m33_cpu.h"
 
 /* Architecture selection */
-typedef enum { ARCH_M0PLUS, ARCH_RV32 } arch_t;
+typedef enum { ARCH_M0PLUS, ARCH_RV32, ARCH_M33 } arch_t;
 
 #include "emulator.h"
 #include "gpio.h"
@@ -566,11 +568,14 @@ int main(int argc, char **argv) {
                 if (strcmp(argv[i], "rv32") == 0 || strcmp(argv[i], "riscv") == 0) {
                     arch = ARCH_RV32;
                     arch_explicit = 1;
+                } else if (strcmp(argv[i], "m33") == 0) {
+                    arch = ARCH_M33;
+                    arch_explicit = 1;
                 } else if (strcmp(argv[i], "m0+") == 0 || strcmp(argv[i], "arm") == 0) {
                     arch = ARCH_M0PLUS;
                     arch_explicit = 1;
                 } else {
-                    fprintf(stderr, "[Error] Unknown architecture: %s (use m0+ or rv32)\n", argv[i]);
+                    fprintf(stderr, "[Error] Unknown architecture: %s (use m0+, m33, or rv32)\n", argv[i]);
                     return EXIT_FAILURE;
                 }
             }
@@ -727,7 +732,7 @@ int main(int argc, char **argv) {
     /* Initialize CPU and peripherals */
     cpu_init();
     /* Flash starts erased (all 0xFF) on real hardware */
-    memset(cpu.flash, 0xFF, FLASH_SIZE);
+    memset(cpu.flash, 0xFF, FLASH_SIZE_MAX);
     reset_runtime_peripherals(tap_name);
 
     int loaded = 0;
@@ -754,7 +759,8 @@ int main(int argc, char **argv) {
             arch = ARCH_RV32;
             fprintf(stderr, "[Init] Auto-detected RISC-V firmware — switching to -arch rv32\n");
         } else if (fw_arch == FW_ARCH_ARM_M33) {
-            fprintf(stderr, "[Init] Auto-detected Cortex-M33 firmware (RP2350 ARM mode not yet supported, using M0+)\n");
+            arch = ARCH_M33;
+            fprintf(stderr, "[Init] Auto-detected Cortex-M33 firmware — switching to -arch m33\n");
         }
     }
 
@@ -762,6 +768,8 @@ int main(int argc, char **argv) {
     fprintf(stderr,"\n╔════════════════════════════════════════════════════════════╗\n");
     if (arch == ARCH_RV32) {
         fprintf(stderr,"║    Bramble RP2350 Emulator - Hazard3 RV32IMAC              ║\n");
+    } else if (arch == ARCH_M33) {
+        fprintf(stderr,"║    Bramble RP2350 Emulator - Cortex-M33 (ARMv8-M)          ║\n");
     } else {
         fprintf(stderr,"║    Bramble RP2040 Emulator - %s Mode%s          ║\n",
                 num_active_cores == 1 ? "Single-Core" : "Dual-Core",
@@ -1011,6 +1019,11 @@ skip_fuse:
         fprintf(stderr, "[Init] Memory heatmap enabled → %s\n", mem_heatmap_path);
     }
 
+    /* M33 overlay: apply Cortex-M33 specific state if in M33 mode */
+    if (arch == ARCH_M33) {
+        m33_init_overlay();
+    }
+
     /* ========================================================================
      * Execution Phase
      * ======================================================================== */
@@ -1056,11 +1069,24 @@ skip_fuse:
         rv_cores[0].icache = &rv_icache;
         rv_cores[1].icache = &rv_icache;
 
-        /* Boot hart 0 from ROM (bootrom sets SP and jumps to flash) */
-        rv_cpu_reset(&rv_cores[0], 0x00000000);
+        /* Scan for picobin IMAGE_DEF block to get entry point */
+        picobin_info_t pbi = picobin_scan(cpu.flash, 4096);
+        if (pbi.found && pbi.entry_pc != 0) {
+            /* Direct boot from picobin entry point */
+            rv_cpu_reset(&rv_cores[0], pbi.entry_pc);
+            if (pbi.entry_sp != 0)
+                rv_cores[0].x[2] = pbi.entry_sp;  /* SP */
+            fprintf(stderr, "[RV] Picobin boot: PC=0x%08X SP=0x%08X (%s)\n",
+                    pbi.entry_pc, pbi.entry_sp,
+                    pbi.is_riscv ? "RISC-V" : "ARM");
+        } else {
+            /* Fallback: boot from ROM (bootrom sets SP and jumps to flash) */
+            rv_cpu_reset(&rv_cores[0], 0x00000000);
+            fprintf(stderr, "[RV] ROM boot (no picobin found)\n");
+        }
         /* Hart 1 stays halted until launched by firmware */
 
-        fprintf(stderr, "[RV] Hazard3 Hart 0 booting from ROM\n");
+        fprintf(stderr, "[RV] Hazard3 Hart 0 booting\n");
         fprintf(stderr, "[RV] SRAM: %uKB, Flash: %uKB, ROM: %uKB\n",
                 RP2350_SRAM_SIZE / 1024, FLASH_SIZE / 1024,
                 rv_bus.rom_size / 1024);

@@ -37,10 +37,10 @@ static int uf2_block_flash_offset(const uf2_block_t *block, uint32_t *offset_out
     }
 
     uint32_t offset = block->target_addr - FLASH_BASE;
-    if (offset > FLASH_SIZE) {
+    if (offset > FLASH_SIZE_MAX) {
         return 0;
     }
-    if (block->payload_size > FLASH_SIZE - offset) {
+    if (block->payload_size > FLASH_SIZE_MAX - offset) {
         return 0;
     }
 
