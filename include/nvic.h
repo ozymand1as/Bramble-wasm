@@ -135,6 +135,7 @@ void nvic_write_register(uint32_t addr, uint32_t val);
 
 /* Signal from peripherals that interrupt occurred */
 void nvic_signal_irq(uint32_t irq);
+void nvic_signal_core_irq(int core_id, uint32_t irq);
 
 /* Get effective priority of an exception vector number */
 uint8_t nvic_get_exception_priority(uint32_t vector_num);

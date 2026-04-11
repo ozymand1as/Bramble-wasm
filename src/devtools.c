@@ -27,14 +27,11 @@ void semihosting_init(void) {
 }
 
 /* Read a uint32 from guest memory at addr */
-static uint32_t sh_read32(uint32_t addr) {
-    return mem_read32(addr);
-}
+int sh_activity_count = 0;
 
-/* Read a byte from guest memory */
-static uint8_t sh_read8(uint32_t addr) {
-    return mem_read8(addr);
-}
+static uint32_t sh_read32(uint32_t addr) { return mem_read32(addr); }
+static uint16_t sh_read16(uint32_t addr) { return mem_read16(addr); }
+static uint8_t sh_read8(uint32_t addr) { return mem_read8(addr); }
 
 int semihosting_handle(void) {
     if (!semihosting_enabled) return 0;
@@ -45,7 +42,12 @@ int semihosting_handle(void) {
     switch (op) {
     case SEMIHOST_SYS_WRITEC: {
         /* R1 points to a single character */
+        sh_activity_count++;
         char c = (char)sh_read8(param);
+        
+        void bus_log_uart(int num, int is_tx, uint8_t byte);
+        bus_log_uart(99, 1, (uint8_t)c);
+        
         fputc(c, stdout);
         fflush(stdout);
         cpu.r[0] = 0;
@@ -877,7 +879,7 @@ int log_uart_enabled = 0;
 int log_spi_enabled = 0;
 int log_i2c_enabled = 0;
 
-void bus_log_uart(int num, int is_tx, uint8_t byte) {
+__attribute__((weak)) void bus_log_uart(int num, int is_tx, uint8_t byte) {
     if (!log_uart_enabled) return;
     char printable = (byte >= 0x20 && byte < 0x7F) ? (char)byte : '.';
     fprintf(stderr, "[UART%d] %s 0x%02X '%c'\n", num, is_tx ? "TX" : "RX", byte, printable);

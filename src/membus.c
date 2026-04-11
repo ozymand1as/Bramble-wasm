@@ -1362,8 +1362,7 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
     if (addr >= SIO_BASE && addr < SIO_BASE + 0x1000) {
-        if (mem_debug_unmapped)
-            fprintf(stderr, "[MEM] unmapped SIO write32: 0x%08X = 0x%08X\n", addr, val);
+        sio_write32(addr - SIO_BASE, val);
         return;
     }
 
@@ -1425,7 +1424,10 @@ void mem_write16(uint32_t addr, uint16_t val) {
 
     /* Stub out peripheral writes for now. */
     if (addr >= 0x40000000 && addr < 0x50000000) return;   /* APB/AHB peripherals */
-    if (addr >= SIO_BASE     && addr < SIO_BASE + 0x1000) return;
+    if (addr >= SIO_BASE     && addr < SIO_BASE + 0x1000) {
+        sio_write32(addr - SIO_BASE, val);
+        return;
+    }
 }
 
 void mem_write8(uint32_t addr, uint8_t val) {
@@ -1480,7 +1482,10 @@ void mem_write8(uint32_t addr, uint8_t val) {
 
     /* Stub out peripheral writes for now. */
     if (addr >= 0x40000000 && addr < 0x50000000) return;   /* APB/AHB peripherals */
-    if (addr >= SIO_BASE     && addr < SIO_BASE + 0x1000) return;
+    if (addr >= SIO_BASE     && addr < SIO_BASE + 0x1000) {
+        sio_write32(addr - SIO_BASE, val);
+        return;
+    }
 }
 
 uint32_t mem_read32(uint32_t addr) {

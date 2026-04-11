@@ -488,6 +488,16 @@ void nvic_write_register(uint32_t addr, uint32_t val) {
     }
 }
 
+/* Signal an interrupt to a specific core's NVIC.
+ * Used for core-private interrupts like SIO FIFO. */
+void nvic_signal_core_irq(int core_id, uint32_t irq) {
+    if (core_id < 0 || core_id >= 2) return;
+    if (irq < NUM_EXTERNAL_IRQS) {
+        nvic_states[core_id].pending |= (1 << irq);
+        corepool_wake_cores(); // Ensure both cores check if they need to run
+    }
+}
+
 /* Called by peripherals to signal an interrupt on BOTH cores' NVICs.
  * On real RP2040, the interrupt line goes to both cores' NVICs.
  * Each core independently decides whether to handle based on its own enable mask. */
@@ -508,8 +518,7 @@ void nvic_signal_irq(uint32_t irq) {
 
         /* Set pending on BOTH cores (shared interrupt line) */
         for (int c = 0; c < 2; c++) {
-            nvic_states[c].pending |= (1 << irq);
+            nvic_signal_core_irq(c, irq);
         }
-        corepool_wake_cores();
     }
 }

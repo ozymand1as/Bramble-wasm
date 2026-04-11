@@ -1440,6 +1440,10 @@ void dual_core_init(void) {
     num_active_cores = 1;
     active_core = CORE0;
 
+    /* Initialize Core 1 bootrom state */
+    core1_bootrom.waiting_for_launch = 1;
+    core1_bootrom.launch_count = 0;
+
     /* Initialize core structures */
     for (int i = 0; i < NUM_CORES; i++) {
         memset(&cores[i], 0, sizeof(cpu_state_dual_t));
@@ -1904,6 +1908,10 @@ void sio_set_core1_stall(int stall) {
     (void)stall;
 }
 
+int sio_get_launch_count(void) {
+    return core1_bootrom.launch_count;
+}
+
 int sio_core1_bootrom_handle_fifo_write(uint32_t val) {
     if (!core1_bootrom.waiting_for_launch) {
         return 0;
@@ -1912,10 +1920,13 @@ int sio_core1_bootrom_handle_fifo_write(uint32_t val) {
     fifo_try_push(CORE0, val);
 
     if (core1_bootrom.launch_count < 6) {
+        printf("[SIO] Core 1 boot word %d: 0x%08X\n", core1_bootrom.launch_count, val);
         core1_bootrom.launch_words[core1_bootrom.launch_count++] = val;
     }
 
     if (core1_bootrom.launch_count == 6) {
+        printf("[SIO] Core 1 Boot Sequence Complete. VTOR:0x%08X SP:0x%08X PC:0x%08X\n", 
+               core1_bootrom.launch_words[3], core1_bootrom.launch_words[4], core1_bootrom.launch_words[5]);
         memset(cores[CORE1].r, 0, sizeof(cores[CORE1].r));
         cores[CORE1].vtor = core1_bootrom.launch_words[3];
         cores[CORE1].r[13] = core1_bootrom.launch_words[4];
@@ -2031,8 +2042,8 @@ int fifo_try_push(int core_id, uint32_t val) {
     fifo[core_id].write_ptr = (fifo[core_id].write_ptr + 1) % FIFO_DEPTH;
     fifo[core_id].count++;
 
-    /* Signal SIO IRQ for the receiving core */
-    nvic_signal_irq(core_id == CORE0 ? IRQ_SIO_IRQ_PROC0 : IRQ_SIO_IRQ_PROC1);
+    /* Signal SIO IRQ for only the receiving core */
+    nvic_signal_core_irq(core_id, core_id == CORE0 ? IRQ_SIO_IRQ_PROC0 : IRQ_SIO_IRQ_PROC1);
 
     return 1;
 }
