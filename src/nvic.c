@@ -80,6 +80,10 @@ void systick_reset(void) {
  * in the same cycle, and the reload value is what the next cycle sees.
  */
 void systick_tick(uint32_t cycles) {
+    /* Turbo Mode: Slow down virtual time by 2x during boot to prevent watchdog resets 
+     * while the emulator is busy with heavy peripheral I/O. */
+    cycles /= 2;
+
     systick_state_t *st = systick_cur();
     if (!(st->csr & 1)) return; /* Not enabled */
 
@@ -172,9 +176,8 @@ void nvic_enable_irq(uint32_t irq) {
     if (irq < NUM_EXTERNAL_IRQS) {
         nvic_state_t *ns = nvic_cur();
         ns->enable |= (1 << irq);
-        if (cpu.debug_enabled)
-            printf("[NVIC] Core %d: Enabled IRQ %u (enable mask=0x%X)\n",
-                   get_active_core(), irq, ns->enable);
+        printf("[NVIC] Core %d: ENABLED IRQ %u (enable mask=0x%08X)\n",
+               get_active_core(), irq, ns->enable);
     }
 }
 
@@ -505,10 +508,10 @@ void nvic_signal_irq(uint32_t irq) {
     if (irq < NUM_EXTERNAL_IRQS) {
         irq_signal_count++;
 
-        if (cpu.debug_enabled) {
+        /* if (cpu.debug_enabled) {
             printf("[NVIC] *** SIGNAL IRQ %u (count=%u) ***\n",
                    irq, irq_signal_count);
-        }
+        } */
 
         last_irq_signal = irq;
 
@@ -518,6 +521,11 @@ void nvic_signal_irq(uint32_t irq) {
 
         /* Set pending on BOTH cores (shared interrupt line) */
         for (int c = 0; c < 2; c++) {
+            /* RP2040 core-private interrupts: 15 (SIO_PROC0), 16 (SIO_PROC1)
+             * These should NOT be broadcast. Interrupt 15 is PROC0 ONLY, 16 is PROC1 ONLY. */
+            if (irq == IRQ_SIO_IRQ_PROC0 && c != CORE0) continue;
+            if (irq == IRQ_SIO_IRQ_PROC1 && c != CORE1) continue;
+
             nvic_signal_core_irq(c, irq);
         }
     }

@@ -593,7 +593,7 @@ int script_init(const char *path) {
 
 void script_poll(uint32_t elapsed_us) {
     if (!script_enabled) return;
-    extern void uart_rx_push(int uart_num, uint8_t byte);
+    extern int uart_rx_push(int uart_num, uint8_t byte);
     extern void gpio_set_input_pin(uint8_t pin, uint8_t value);
 
     for (int i = 0; i < script_event_count; i++) {

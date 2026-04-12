@@ -892,10 +892,8 @@ void cpu_exception_entry(uint32_t vector_num) {
      * HardFault has fixed priority -1. If we're already in HardFault and another
      * fault occurs, the real Cortex-M0+ enters lockup (core halts). */
     if (vector_num == EXC_HARDFAULT && cpu.current_irq == EXC_HARDFAULT) {
-        if (cpu.debug_enabled) {
-            printf("[CPU] LOCKUP: double-fault (HardFault during HardFault) at PC=0x%08X\n",
-                   cpu.r[15]);
-        }
+        printf("[CPU] Core %d ENTERING LOCKUP: double-fault (HardFault during HardFault) at PC=0x%08X\n",
+               ac, cpu.r[15]);
         cores[ac].is_halted = 1;
         cpu.r[15] = 0xFFFFFFFF;
         return;
@@ -1489,7 +1487,7 @@ void dual_core_init(void) {
     memset(shared_ram, 0, sizeof(shared_ram));
 
     /* Reset Core 1 bootrom launch state machine */
-    core1_bootrom.waiting_for_launch = 0;
+    core1_bootrom.waiting_for_launch = 1;
     core1_bootrom.launch_count = 0;
 
     /* Initialize dispatch table if needed */
@@ -1510,6 +1508,9 @@ void dual_core_init(void) {
  * Callers can bind once, execute multiple cpu_step() calls, then unbind to
  * amortize the save/restore overhead in hot dual-core paths.
  */
+trace_entry_t pc_trace[NUM_CORES][16];
+int pc_trace_idx[NUM_CORES];
+
 int cpu_bind_core_context(int core_id, cpu_bind_context_t *ctx) {
     if (!ctx || core_id >= NUM_CORES || cores[core_id].is_halted) {
         return 0;
@@ -1526,6 +1527,7 @@ int cpu_bind_core_context(int core_id, cpu_bind_context_t *ctx) {
     ctx->faultmask = cpu.faultmask;
     ctx->control = cpu.control;
     ctx->active_core = get_active_core();
+    ctx->is_halted_before = cores[core_id].is_halted;
 
     memcpy(cpu.r, cores[core_id].r, sizeof(cpu.r));
     cpu.xpsr          = cores[core_id].xpsr;
@@ -1548,6 +1550,23 @@ int cpu_bind_core_context(int core_id, cpu_bind_context_t *ctx) {
     return 1;
 }
 
+void cpu_dump_debug_state(int core_id) {
+     uint32_t last_pc = pc_trace[core_id][(pc_trace_idx[core_id] - 1) & 15].pc;
+     uint32_t *r = cores[core_id].r;
+     
+     printf("[CORE %d] DEBUG STATE PC: 0x%08X (Last PC before halt: 0x%08X)\n", core_id, r[15], last_pc);
+     printf("  R0:%08X R1:%08X R2:%08X R3:%08X\n", r[0], r[1], r[2], r[3]);
+     printf("  R4:%08X R5:%08X R6:%08X R7:%08X\n", r[4], r[5], r[6], r[7]);
+     printf("  R8:%08X R9:%08X R10:%08X R11:%08X\n", r[8], r[9], r[10], r[11]);
+     printf("  R12:%08X SP:%08X LR:%08X PC:%08X\n", r[12], r[13], r[14], r[15]);
+     printf("  NVIC ENABLE:0x%08X PENDING:0x%08X\n", nvic_states[core_id].enable, nvic_states[core_id].pending);
+     printf("  MEM[PC]: %04X %04X %04X %04X %04X %04X %04X %04X\n", 
+            mem_read16(last_pc), mem_read16(last_pc + 2),
+            mem_read16(last_pc + 4), mem_read16(last_pc + 6),
+            mem_read16(last_pc + 8), mem_read16(last_pc + 10),
+            mem_read16(last_pc + 12), mem_read16(last_pc + 14));
+}
+
 void cpu_unbind_core_context(int core_id, const cpu_bind_context_t *ctx) {
     if (!ctx || core_id >= NUM_CORES) {
         return;
@@ -1563,7 +1582,12 @@ void cpu_unbind_core_context(int core_id, const cpu_bind_context_t *ctx) {
     cores[core_id].primask       = cpu.primask;
     cores[core_id].faultmask     = cpu.faultmask;
     cores[core_id].control       = cpu.control;
-    cores[core_id].is_halted     = (cpu.r[15] == 0xFFFFFFFF);
+    cores[core_id].is_halted |= (cpu.r[15] == 0xFFFFFFFF);
+    
+    if (cores[core_id].is_halted && !ctx->is_halted_before) {
+         printf("[CORE %d] TRANSITION TO HALT (Internal)\n", core_id);
+         cpu_dump_debug_state(core_id);
+    }
 
     memcpy(cpu.r, ctx->r, sizeof(cpu.r));
     cpu.xpsr = ctx->xpsr;
@@ -1624,9 +1648,8 @@ void cpu_step_core(int core_id) {
     cores[core_id].faultmask = cpu.faultmask;
     cores[core_id].control = cpu.control;
 
-    if (cpu.r[15] == 0xFFFFFFFF) {
-        cores[core_id].is_halted = 1;
-    }
+    cores[core_id].control = cpu.control;
+    cores[core_id].is_halted |= (cpu.r[15] == 0xFFFFFFFF);
 
     memcpy(cpu.r, saved_r, sizeof(saved_r));
     cpu.xpsr = saved_xpsr;
@@ -1891,16 +1914,25 @@ uint32_t sio_get_core_id(void) {
 
 void sio_set_core1_reset(int assert_reset) {
     if (assert_reset) {
+        if (!cores[CORE1].is_halted) {
+             printf("[SIO] Core 1 RESET ASSERTED by Core %d (External Halt)\n", get_active_core());
+             printf("  Executioner (Core %d) at PC:0x%08X LR:0x%08X\n", get_active_core(), cpu.r[15], cpu.r[14]);
+             cpu_dump_debug_state(CORE1);
+        }
         cores[CORE1].is_halted = 1;
         core1_bootrom.waiting_for_launch = 0;
         core1_bootrom.launch_count = 0;
         memset(&fifo[CORE1], 0, sizeof(fifo[CORE1]));
     } else {
+        printf("[SIO] Core 1 RESET DEASSERTED by Core %d (Waiting for launch)\n", get_active_core());
+        /* On real RP2040, deasserting reset allows Core 1 to start the bootrom handshake.
+         * We set waiting_for_launch=1 which will keep it effectively halted until 
+         * Core 0 sends the magic words. */
         cores[CORE1].is_halted = 1;
         core1_bootrom.waiting_for_launch = 1;
         core1_bootrom.launch_count = 0;
         memset(&fifo[CORE1], 0, sizeof(fifo[CORE1]));
-        fifo_try_push(CORE0, 0);
+        fifo_try_push(CORE0, 0); /* Initial SIO word to signal bootrom ready */
     }
 }
 
@@ -1914,7 +1946,14 @@ int sio_get_launch_count(void) {
 
 int sio_core1_bootrom_handle_fifo_write(uint32_t val) {
     if (!core1_bootrom.waiting_for_launch) {
+        if (cpu.debug_enabled) {
+            printf("[SIO] Ignored FIFO write (not waiting for launch): 0x%08X\n", val);
+        }
         return 0;
+    }
+
+    if (cpu.debug_enabled) {
+        printf("[SIO] Handshake word received: 0x%08X\n", val);
     }
 
     fifo_try_push(CORE0, val);
@@ -2027,6 +2066,14 @@ int fifo_try_pop(int core_id, uint32_t *val) {
     *val = fifo[core_id].messages[fifo[core_id].read_ptr];
     fifo[core_id].read_ptr = (fifo[core_id].read_ptr + 1) % FIFO_DEPTH;
     fifo[core_id].count--;
+
+    /* Level-triggered SIO FIFO IRQ: clear pending bit when FIFO drains to empty.
+     * On real RP2040, SIO_IRQ_PROC0/1 is asserted while the RX FIFO is non-empty.
+     * Clearing it when empty prevents stale pending bits from causing spurious wakeups. */
+    if (fifo[core_id].count == 0) {
+        uint32_t irq = (core_id == CORE0) ? IRQ_SIO_IRQ_PROC0 : IRQ_SIO_IRQ_PROC1;
+        nvic_states[core_id].pending &= ~(1u << irq);
+    }
 
     return 1;
 }

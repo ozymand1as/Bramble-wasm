@@ -927,6 +927,9 @@ static void sio_write32(uint32_t offset, uint32_t val) {
         sio_fifo_sticky[core_id] &= ~(val & (SIO_FIFO_ST_ROE | SIO_FIFO_ST_WOF));
         break;
     case SIO_FIFO_WR_OFFSET:
+        if (cpu.debug_enabled) {
+            printf("[SIO] CORE%d -> WR: 0x%08X\n", core_id, val);
+        }
         if (other_core == CORE1 && sio_core1_bootrom_handle_fifo_write(val)) {
             break;
         }
@@ -973,14 +976,20 @@ static uint32_t sio_read32(uint32_t offset) {
     switch (offset) {
     case SIO_CPUID_OFFSET:
         return (uint32_t)core_id;
-    case SIO_FIFO_ST_OFFSET:
-        return sio_fifo_status(core_id);
-    case SIO_FIFO_RD_OFFSET:
+    case SIO_FIFO_ST_OFFSET: {
+        uint32_t st = sio_fifo_status(core_id);
+        return st;
+    }
+    case SIO_FIFO_RD_OFFSET: {
+        uint32_t val = 0;
         if (!fifo_try_pop(core_id, &val)) {
             sio_fifo_sticky[core_id] |= SIO_FIFO_ST_ROE;
-            return 0;
+        }
+        if (cpu.debug_enabled) {
+            printf("[SIO] CORE%d <- RD: 0x%08X\n", core_id, val);
         }
         return val;
+    }
     case SIO_SPINLOCK_ST_OFFSET:
         return sio_spinlock_state_bitmap();
     case SIO_DIV_UDIVIDEND_OFFSET:
@@ -1088,28 +1097,27 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
-    /* Timer registers (including atomic aliases: XOR +0x1000, SET +0x2000, CLR +0x3000) */
+    /* Timer registers (including atomic aliases) */
     if (addr >= TIMER_BASE && addr < TIMER_BASE + 0x4000) {
-        uint32_t alias = (addr - TIMER_BASE) & 0x3000;
+        uint32_t alias = (addr - TIMER_BASE) >> 12;
         uint32_t reg_addr = TIMER_BASE + ((addr - TIMER_BASE) & 0xFFF);
-        if (alias == 0x0000) {
+        if (alias == 0) {
             timer_write32(reg_addr, val);
-        } else if (alias == 0x2000) {  /* SET */
+        } else {
             uint32_t cur = timer_read32(reg_addr);
-            timer_write32(reg_addr, cur | val);
-        } else if (alias == 0x3000) {  /* CLR */
-            uint32_t cur = timer_read32(reg_addr);
-            timer_write32(reg_addr, cur & ~val);
-        } else {  /* XOR 0x1000 */
-            uint32_t cur = timer_read32(reg_addr);
-            timer_write32(reg_addr, cur ^ val);
+            switch (alias) {
+                case 1: timer_write32(reg_addr, cur ^ val); break;
+                case 2: timer_write32(reg_addr, cur | val); break;
+                case 3: timer_write32(reg_addr, cur & ~val); break;
+            }
         }
         return;
     }
 
-    /* SIO core-local registers */
-    if (addr >= SIO_BASE && addr < SIO_BASE + 0x100) {
-        sio_write32(addr - SIO_BASE, val);
+    /* SIO spinlocks */
+    if (addr >= SPINLOCK_BASE && addr < SPINLOCK_BASE + SPINLOCK_SIZE * 4) {
+        uint32_t lock_num = (addr - SPINLOCK_BASE) / 4;
+        spinlock_release(lock_num);
         return;
     }
 
@@ -1120,10 +1128,9 @@ void mem_write32(uint32_t addr, uint32_t val) {
         return;
     }
 
-    /* SIO spinlocks */
-    if (addr >= SPINLOCK_BASE && addr < SPINLOCK_BASE + SPINLOCK_SIZE * 4) {
-        uint32_t lock_num = (addr - SPINLOCK_BASE) / 4;
-        spinlock_release(lock_num);
+    /* SIO core-local registers */
+    if (addr >= SIO_BASE && addr < SIO_BASE + 0x1000) {
+        sio_write32(addr - SIO_BASE, val);
         return;
     }
 
@@ -1158,77 +1165,81 @@ void mem_write32(uint32_t addr, uint32_t val) {
         }
     }
 
-    /* I2C peripherals */
+    /* I2C peripherals (including atomic aliases) */
     {
         int i2c_num = i2c_match(addr);
         if (i2c_num >= 0) {
-            uint32_t alias = addr & 0x3000;
+            uint32_t alias = (addr >> 12) & 0x3;
             uint32_t off = addr & 0xFFF;
-            if (alias == 0x0000) {
+            if (alias == 0) {
                 i2c_write32(i2c_num, off, val);
-            } else if (alias == 0x2000) {
-                i2c_write32(i2c_num, off, i2c_read32(i2c_num, off) | val);
-            } else if (alias == 0x3000) {
-                i2c_write32(i2c_num, off, i2c_read32(i2c_num, off) & ~val);
             } else {
-                i2c_write32(i2c_num, off, i2c_read32(i2c_num, off) ^ val);
+                uint32_t cur = i2c_read32(i2c_num, off);
+                switch (alias) {
+                    case 1: i2c_write32(i2c_num, off, cur ^ val); break;
+                    case 2: i2c_write32(i2c_num, off, cur | val); break;
+                    case 3: i2c_write32(i2c_num, off, cur & ~val); break;
+                }
             }
             return;
         }
     }
 
-    /* PWM */
+    /* PWM (including atomic aliases) */
     if (pwm_match(addr)) {
-        uint32_t alias = addr & 0x3000;
+        uint32_t alias = (addr >> 12) & 0x3;
         uint32_t off = addr & 0xFFF;
-        if (alias == 0x0000) {
+        if (alias == 0) {
             pwm_write32(off, val);
-        } else if (alias == 0x2000) {
-            pwm_write32(off, pwm_read32(off) | val);
-        } else if (alias == 0x3000) {
-            pwm_write32(off, pwm_read32(off) & ~val);
         } else {
-            pwm_write32(off, pwm_read32(off) ^ val);
+            uint32_t cur = pwm_read32(off);
+            switch (alias) {
+                case 1: pwm_write32(off, cur ^ val); break;
+                case 2: pwm_write32(off, cur | val); break;
+                case 3: pwm_write32(off, cur & ~val); break;
+            }
         }
         return;
     }
 
-    /* DMA controller */
+    /* DMA controller (including atomic aliases) */
     if (dma_match(addr)) {
-        uint32_t alias = addr & 0x3000;
+        uint32_t alias = (addr >> 12) & 0x3;
         uint32_t off = addr & 0xFFF;
-        if (alias == 0x0000) {
+        if (alias == 0) {
             dma_write32(off, val);
-        } else if (alias == 0x2000) {
-            dma_write32(off, dma_read32(off) | val);
-        } else if (alias == 0x3000) {
-            dma_write32(off, dma_read32(off) & ~val);
         } else {
-            dma_write32(off, dma_read32(off) ^ val);
+            uint32_t cur = dma_read32(off);
+            switch (alias) {
+                case 1: dma_write32(off, cur ^ val); break;
+                case 2: dma_write32(off, cur | val); break;
+                case 3: dma_write32(off, cur & ~val); break;
+            }
         }
         return;
     }
 
-    /* PIO */
+    /* PIO (including atomic aliases) */
     {
         int pio_num = pio_match(addr);
         if (pio_num >= 0) {
-            uint32_t alias = addr & 0x3000;
+            uint32_t alias = (addr >> 12) & 0x3;
             uint32_t off = addr & 0xFFF;
-            if (alias == 0x0000) {
+            if (alias == 0) {
                 pio_write32(pio_num, off, val);
-            } else if (alias == 0x2000) {
-                pio_write32(pio_num, off, pio_read32(pio_num, off) | val);
-            } else if (alias == 0x3000) {
-                pio_write32(pio_num, off, pio_read32(pio_num, off) & ~val);
             } else {
-                pio_write32(pio_num, off, pio_read32(pio_num, off) ^ val);
+                uint32_t cur = pio_read32(pio_num, off);
+                switch (alias) {
+                    case 1: pio_write32(pio_num, off, cur ^ val); break;
+                    case 2: pio_write32(pio_num, off, cur | val); break;
+                    case 3: pio_write32(pio_num, off, cur & ~val); break;
+                }
             }
             return;
         }
     }
 
-    /* USB controller */
+    /* USB controller (including atomic aliases for DPRAM and regs) */
     if (usb_match(addr)) {
         usb_write32(addr, val);
         return;
@@ -1355,14 +1366,10 @@ void mem_write32(uint32_t addr, uint32_t val) {
     /* ROM area writes (0x00000000-0x00007FFF) — silently ignore */
     if (addr < 0x00008000) return;
 
-    /* Stub out other peripheral writes for now. */
+    /* Address is in the peripheral range but didn't match specific logic above. */
     if (addr >= 0x40000000 && addr < 0x50000000) {
         if (mem_debug_unmapped)
             fprintf(stderr, "[MEM] unmapped write32: 0x%08X = 0x%08X\n", addr, val);
-        return;
-    }
-    if (addr >= SIO_BASE && addr < SIO_BASE + 0x1000) {
-        sio_write32(addr - SIO_BASE, val);
         return;
     }
 
@@ -1422,11 +1429,18 @@ void mem_write16(uint32_t addr, uint16_t val) {
         return;
     }
 
-    /* Stub out peripheral writes for now. */
-    if (addr >= 0x40000000 && addr < 0x50000000) return;   /* APB/AHB peripherals */
-    if (addr >= SIO_BASE     && addr < SIO_BASE + 0x1000) {
+    /* SIO core-local registers */
+    if (addr >= SIO_BASE && addr < SIO_BASE + 0x1000) {
         sio_write32(addr - SIO_BASE, val);
         return;
+    }
+
+    /* AHB/APB Peripherals (including atomic aliases) */
+    if (addr >= 0x40000000 && addr < 0x50000000) {
+        if ((addr & 0x3000) != 0) {
+            mem_write32(addr, (uint32_t)val);
+            return;
+        }
     }
 }
 
@@ -1480,11 +1494,18 @@ void mem_write8(uint32_t addr, uint8_t val) {
         return;
     }
 
-    /* Stub out peripheral writes for now. */
-    if (addr >= 0x40000000 && addr < 0x50000000) return;   /* APB/AHB peripherals */
-    if (addr >= SIO_BASE     && addr < SIO_BASE + 0x1000) {
+    /* SIO core-local registers */
+    if (addr >= SIO_BASE && addr < SIO_BASE + 0x1000) {
         sio_write32(addr - SIO_BASE, val);
         return;
+    }
+
+    /* AHB/APB Peripherals (including atomic aliases) */
+    if (addr >= 0x40000000 && addr < 0x50000000) {
+        if ((addr & 0x3000) != 0) {
+            mem_write32(addr, (uint32_t)val);
+            return;
+        }
     }
 }
 
@@ -1576,16 +1597,6 @@ uint32_t mem_read32(uint32_t addr) {
         return timer_read32(reg_addr);
     }
 
-    /* SIO core-local registers */
-    if (addr >= SIO_BASE && addr < SIO_BASE + 0x100) {
-        return sio_read32(addr - SIO_BASE);
-    }
-
-    /* GPIO registers */
-    if (gpio_bus_match(addr)) {
-        return gpio_read32(addr);
-    }
-
     /* SIO spinlock state and lock registers */
     if (addr == SIO_BASE + 0x5C) {
         return sio_spinlock_state_bitmap();
@@ -1593,6 +1604,16 @@ uint32_t mem_read32(uint32_t addr) {
     if (addr >= SPINLOCK_BASE && addr < SPINLOCK_BASE + SPINLOCK_SIZE * 4) {
         uint32_t lock_num = (addr - SPINLOCK_BASE) / 4;
         return spinlock_acquire(lock_num);
+    }
+
+    /* GPIO registers */
+    if (gpio_bus_match(addr)) {
+        return gpio_read32(addr);
+    }
+
+    /* SIO core-local registers */
+    if (addr >= SIO_BASE && addr < SIO_BASE + 0x1000) {
+        return sio_read32(addr - SIO_BASE);
     }
 
     /* Clock-domain peripherals (Resets, Clocks, XOSC, PLLs, Watchdog) */
@@ -1770,7 +1791,18 @@ uint16_t mem_read16(uint32_t addr) {
         return (uint16_t)((val32 >> (bo * 8)) & 0xFFFF);
     }
 
-    /* No 16-bit peripheral emulation yet. */
+    /* Route peripheral reads through 32-bit width */
+    if (addr >= 0x40000000 && addr < 0x50000000) {
+        uint32_t val32 = mem_read32(addr & ~0x3);
+        uint8_t offset = addr & 0x3;
+        return (uint16_t)((val32 >> (offset * 8)) & 0xFFFF);
+    }
+    if (addr >= SIO_BASE && addr < SIO_BASE + 0x1000) {
+        uint32_t val32 = sio_read32(addr & ~0x3);
+        uint8_t offset = addr & 0x3;
+        return (uint16_t)((val32 >> (offset * 8)) & 0xFFFF);
+    }
+
     return 0;
 }
 
@@ -1817,6 +1849,18 @@ uint8_t mem_read8(uint32_t addr) {
         uint32_t val32 = usb_read32(addr & ~0x3);
         uint32_t bo = addr & 0x3;
         return (uint8_t)((val32 >> (bo * 8)) & 0xFF);
+    }
+
+    /* Route peripheral reads through 32-bit width */
+    if (addr >= 0x40000000 && addr < 0x50000000) {
+        uint32_t val32 = mem_read32(addr & ~0x3);
+        uint8_t offset = addr & 0x3;
+        return (uint8_t)((val32 >> (offset * 8)) & 0xFF);
+    }
+    if (addr >= SIO_BASE && addr < SIO_BASE + 0x1000) {
+        uint32_t val32 = sio_read32(addr & ~0x3);
+        uint8_t offset = addr & 0x3;
+        return (uint8_t)((val32 >> (offset * 8)) & 0xFF);
     }
 
     return 0xFF;  /* Unmapped reads return 0xFF */

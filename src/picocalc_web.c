@@ -67,8 +67,8 @@ static uint32_t last_sd_sector = 0;
 #define SD_DISK_SIZE (4 * 1024 * 1024)
 static uint8_t *virtual_sd_disk = NULL;
 
-static uint32_t pc_trace[NUM_CORES][16];
-static int pc_trace_idx[NUM_CORES] = {0};
+extern trace_entry_t pc_trace[NUM_CORES][16];
+extern int pc_trace_idx[NUM_CORES];
 
 // UART Log Buffer
 #define UART_LOG_SIZE 65536
@@ -350,6 +350,12 @@ int picocalc_i2c_write(void *ctx, uint8_t data) {
 
 
 EMSCRIPTEN_KEEPALIVE
+// Dummy function to force the linker to include malloc/free
+void dummy_linker_fix(void) {
+    void *ptr = malloc(1);
+    free(ptr);
+}
+
 void picocalc_web_init(void) {
     printf("[Web] Initializing emulator...\n");
     cpu_init();
@@ -529,10 +535,12 @@ void picocalc_web_get_fault_frame(int core, uint32_t *out_frame) {
 }
 
 EMSCRIPTEN_KEEPALIVE
-uint32_t picocalc_web_get_pc_trace(int core, uint32_t *out_trace) {
+uint32_t picocalc_web_get_pc_trace(int core, uint32_t *out_pcs, uint16_t *out_instrs) {
     if (core < 0 || core >= NUM_CORES) return 0;
     for (int i = 0; i < 16; i++) {
-        out_trace[i] = pc_trace[core][(pc_trace_idx[core] - 1 - i) & 15];
+        int idx = (pc_trace_idx[core] - 1 - i) & 15;
+        out_pcs[i] = pc_trace[core][idx].pc;
+        out_instrs[i] = pc_trace[core][idx].instr;
     }
     return 16;
 }
@@ -562,15 +570,24 @@ uint16_t picocalc_web_read_mem16(uint32_t addr) {
     return mem_read16(addr);
 }
 
+EMSCRIPTEN_KEEPALIVE
+void picocalc_web_get_memory_range(uint32_t addr, uint32_t len, uint8_t *out_data) {
+    for (uint32_t i = 0; i < len; i++) {
+        out_data[i] = mem_read8(addr + i);
+    }
+}
+
 void picocalc_emscripten_loop(void) {
     // Run ~500k instructions per frame (~60fps → ~30M steps/sec → ~25% RP2040 speed)
     for(int i=0; i<500000; i++) {
         if (!cores[CORE0].is_halted || !cores[CORE1].is_halted) {
             // Update traces
+            // Update traces
             for (int c = 0; c < NUM_CORES; c++) {
                 uint32_t pc = cores[c].r[15];
-                if (pc != pc_trace[c][(pc_trace_idx[c] - 1) & 15]) {
-                    pc_trace[c][pc_trace_idx[c]] = pc;
+                if (pc != pc_trace[c][(pc_trace_idx[c] - 1) & 15].pc) {
+                    pc_trace[c][pc_trace_idx[c]].pc = pc;
+                    pc_trace[c][pc_trace_idx[c]].instr = mem_read16(pc);
                     pc_trace_idx[c] = (pc_trace_idx[c] + 1) & 15;
                 }
             }

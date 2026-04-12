@@ -15,6 +15,13 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#define NUM_CORES 2
+
+typedef struct {
+    uint32_t pc;
+    uint16_t instr;
+} trace_entry_t;
+
 /* ========================================================================
  * Build Configuration
  * ======================================================================== */
@@ -305,6 +312,7 @@ typedef struct {
     uint32_t faultmask;
     uint32_t control;
     int active_core;
+    int is_halted_before;
 } cpu_bind_context_t;
 
 /* Initialization */
