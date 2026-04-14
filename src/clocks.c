@@ -456,30 +456,57 @@ uint32_t clocks_read32(uint32_t addr) {
     /* Map to canonical address for reading */
     uint32_t canonical = base_aligned | (addr & 0xFFF);
 
+    uint32_t result = 0;
     if (base_aligned == RESETS_BASE)
-        return resets_read(canonical);
-    if (base_aligned == CLOCKS_BASE)
-        return clocks_domain_read(canonical);
-    if (base_aligned == XOSC_BASE)
-        return xosc_read(canonical);
-    if (base_aligned == PLL_SYS_BASE)
-        return pll_read(&clocks_state.pll_sys, canonical & 0xFFF);
-    if (base_aligned == PLL_USB_BASE)
-        return pll_read(&clocks_state.pll_usb, canonical & 0xFFF);
-    if (base_aligned == WATCHDOG_BASE)
-        return watchdog_read(canonical);
-    if (base_aligned == PSM_BASE)
-        return psm_read(canonical);
-    if (base_aligned == ROSC_BASE)
-        return rosc_read(canonical);
+        result = resets_read(canonical);
+    else if (base_aligned == CLOCKS_BASE)
+        result = clocks_domain_read(canonical);
+    else if (base_aligned == XOSC_BASE)
+        result = xosc_read(canonical);
+    else if (base_aligned == PLL_SYS_BASE)
+        result = pll_read(&clocks_state.pll_sys, canonical & 0xFFF);
+    else if (base_aligned == PLL_USB_BASE)
+        result = pll_read(&clocks_state.pll_usb, canonical & 0xFFF);
+    else if (base_aligned == WATCHDOG_BASE)
+        result = watchdog_read(canonical);
+    else if (base_aligned == PSM_BASE)
+        result = psm_read(canonical);
+    else if (base_aligned == ROSC_BASE)
+        result = rosc_read(canonical);
 
-    return 0;
+    /* Log reads of key polling registers */
+    uint32_t off = addr & 0xFFF;
+    int log_it = 0;
+    if (base_aligned == RESETS_BASE && off == 0x08)  log_it = 1; /* RESET_DONE */
+    if (base_aligned == PSM_BASE    && off == 0x0C)  log_it = 1; /* PSM_DONE */
+    if (base_aligned == CLOCKS_BASE && (off % 0x0C) == 0x08 && off < NUM_CLOCK_GENERATORS * 0x0C)
+        log_it = 1; /* CLK_xSELECTED */
+    if (base_aligned == PLL_SYS_BASE && off == PLL_CS_OFFSET)  log_it = 1; /* PLL_SYS_CS */
+    if (base_aligned == PLL_USB_BASE && off == PLL_CS_OFFSET)  log_it = 1; /* PLL_USB_CS */
+    if (base_aligned == XOSC_BASE   && off == 0x04)            log_it = 1; /* XOSC_STATUS */
+    if (log_it)
+        fprintf(stderr, "[CLOCKS R] addr=0x%08X = 0x%08X\n", addr, result);
+
+    return result;
 }
 
 void clocks_write32(uint32_t addr, uint32_t val) {
     uint32_t base_aligned = addr & ~0x3FFF;
     uint32_t alias = (addr >> 12) & 0x3;
     uint32_t canonical = base_aligned | (addr & 0xFFF);
+
+    static const char *alias_names[] = {"W", "XOR", "SET", "CLR"};
+    const char *pname = "UNKNOWN";
+    if (base_aligned == RESETS_BASE) pname = "RESETS";
+    else if (base_aligned == CLOCKS_BASE) pname = "CLOCKS";
+    else if (base_aligned == XOSC_BASE) pname = "XOSC";
+    else if (base_aligned == PLL_SYS_BASE) pname = "PLL_SYS";
+    else if (base_aligned == PLL_USB_BASE) pname = "PLL_USB";
+    else if (base_aligned == WATCHDOG_BASE) pname = "WATCHDOG";
+    else if (base_aligned == PSM_BASE) pname = "PSM";
+    else if (base_aligned == ROSC_BASE) pname = "ROSC";
+    fprintf(stderr, "[CLOCKS W] %s+0x%03X [%s] = 0x%08X\n",
+            pname, addr & 0xFFF, alias_names[alias], val);
 
     if (base_aligned == RESETS_BASE)
         resets_write(canonical, val, alias);

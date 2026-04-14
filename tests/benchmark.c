@@ -168,6 +168,7 @@ static void build_firmware(void) {
  */
 static uint32_t run_until_halt(uint32_t max_steps) {
     uint32_t count = 0;
+    (void)count;
     cpu_bind_context_t ctx;
 
     if (!cpu_bind_core_context(CORE0, &ctx)) {

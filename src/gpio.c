@@ -113,8 +113,8 @@ static uint32_t gpio_effective_pins(void) {
 
 /* Read from GPIO register space */
 uint32_t gpio_read32(uint32_t addr) {
-    /* SIO GPIO registers (fast access) */
-    if (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100) {
+    /* SIO GPIO registers (fast access) - only 0x04-0x2C; dividers/FIFO route to sio_read32 */
+    if (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x30) {
         switch (addr) {
             case SIO_GPIO_IN:
                 /* Return current input values */
@@ -203,8 +203,8 @@ uint32_t gpio_read32(uint32_t addr) {
 
 /* Write to GPIO register space */
 void gpio_write32(uint32_t addr, uint32_t val) {
-    /* SIO GPIO registers (fast access with atomic operations) */
-    if (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100) {
+    /* SIO GPIO registers (fast access with atomic operations) - only 0x04-0x2C */
+    if (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x30) {
         uint32_t old_pins = gpio_effective_pins();
         switch (addr) {
             case SIO_GPIO_OUT: {

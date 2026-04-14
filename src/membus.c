@@ -223,7 +223,7 @@ static int gpio_bus_match(uint32_t addr) {
             (addr >= PADS_BANK0_BASE + REG_ALIAS_XOR_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_XOR_BITS + 0x80) ||
             (addr >= PADS_BANK0_BASE + REG_ALIAS_SET_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_SET_BITS + 0x80) ||
             (addr >= PADS_BANK0_BASE + REG_ALIAS_CLR_BITS && addr < PADS_BANK0_BASE + REG_ALIAS_CLR_BITS + 0x80) ||
-            (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x100));
+            (addr >= SIO_BASE_GPIO && addr < SIO_BASE_GPIO + 0x30));  /* SIO GPIO regs only (0x04-0x2C); dividers/FIFO/interp route to sio_write32/sio_read32 */
 }
 
 static uint32_t pads_qspi_read(uint32_t offset) {
@@ -646,8 +646,8 @@ typedef struct {
 } sio_divider_state_t;
 
 static sio_divider_state_t sio_dividers[NUM_CORES] = {
-    [0] = { .csr = SIO_DIV_CSR_READY },
-    [1] = { .csr = SIO_DIV_CSR_READY },
+    [0] = { .csr = SIO_DIV_CSR_READY, .udividend = 1, .udivisor = 1, .quotient = 1, .remainder = 0 },
+    [1] = { .csr = SIO_DIV_CSR_READY, .udividend = 1, .udivisor = 1, .quotient = 1, .remainder = 0 },
 };
 
 /* ========================================================================
@@ -952,8 +952,6 @@ static void sio_write32(uint32_t offset, uint32_t val) {
 
 static uint32_t sio_read32(uint32_t offset) {
     int core_id = sio_current_core();
-    uint32_t val = 0;
-
     /* Interpolator reads (0x80-0xBF = INTERP0, 0xC0-0xFF = INTERP1) */
     if (offset >= 0x80 && offset <= 0xFC) {
         int interp_idx = (offset >= 0xC0) ? 1 : 0;
@@ -962,9 +960,8 @@ static uint32_t sio_read32(uint32_t offset) {
     }
 
     /* GPIO offsets in SIO space - delegate to gpio module */
-    if ((offset >= SIO_GPIO_IN_OFFSET && offset <= 0x2C) ||
-        (offset >= 0x30 && offset <= 0x4C)) {
-        /* 0x04-0x2C = GPIO bank 0, 0x30-0x4C = GPIO_HI (QSPI) */
+    if (offset >= SIO_GPIO_IN_OFFSET && offset <= 0x2C) {
+        /* 0x04-0x2C = GPIO bank 0 (GPIO_IN, GPIO_HI_IN, GPIO_OUT, GPIO_OE, etc.) */
         if (offset == SIO_GPIO_HI_IN_OFFSET) {
             /* QSPI GPIO input: 6 pins (SCLK=0, SS=1, SD0-3=2-5) */
             /* Default: CS(SS) high, data lines high (pulled up) */

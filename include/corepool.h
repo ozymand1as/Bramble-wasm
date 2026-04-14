@@ -35,7 +35,7 @@
 
 /* Per-instance registration entry */
 typedef struct {
-    pid_t pid;              /* Process ID */
+    uint32_t pid;              /* Process ID */
     int num_cores;          /* Cores allocated to this instance */
     int active;             /* 1 = running, 0 = stale entry */
 } corepool_entry_t;

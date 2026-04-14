@@ -818,6 +818,13 @@ void cpu_reset_from_flash(void) {
     uint32_t initial_sp = mem_read32(cpu.vtor + 0x00);
     uint32_t reset_vector = mem_read32(cpu.vtor + 0x04);
 
+    // Check for empty/zeroed firmware image
+    if (initial_sp == 0 && reset_vector == 0) {
+        fprintf(stderr, "[Boot] WARNING: Empty or zeroed firmware image detected. CPU halted gracefully.\n");
+        cpu.r[15] = 0xFFFFFFFF;
+        return;
+    }
+
     if (initial_sp < RAM_BASE || initial_sp > RAM_BASE + RAM_SIZE) {
         fprintf(stderr, "[Boot] ERROR: Invalid SP 0x%08X (not in RAM 0x%08X-0x%08X)\n",
                initial_sp, RAM_BASE, RAM_BASE + RAM_SIZE);

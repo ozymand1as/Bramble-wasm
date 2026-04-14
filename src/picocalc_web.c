@@ -45,8 +45,11 @@ void reset_runtime_peripherals_web(void) {
 }
 
 static uint8_t display_buffer[320 * 320 * 4]; // RGBA
-static int lcd_dc = 1;
 static int lcd_cs = 1;
+
+/* ========================================================================
+ * Virtual keyboard controller (STM32 @ I2C1 addr 0x1F)
+ * ======================================================================== */
 
 static uint32_t lcd_x = 0, lcd_y = 0;
 static uint32_t lcd_xs = 0, lcd_xe = 319;
@@ -81,6 +84,7 @@ extern int log_uart_enabled;
 
 // Custom UART logger for web
 void bus_log_uart(int num, int is_tx, uint8_t byte) {
+    (void)num;
     if (!is_tx) return;
     uart_xfer_count++;
     uart_log_buf[uart_log_head] = (char)byte;
@@ -156,6 +160,7 @@ uint8_t picocalc_spi_xfer(void *ctx, uint8_t mosi) {
 void picocalc_spi_cs(void *ctx, int asserted) {
     (void)ctx;
     lcd_cs = !asserted; // asserted is 1 when CS goes LOW (active low)
+    (void)lcd_cs;
 }
 
 /* SD Card SPI State Machine */
@@ -206,7 +211,6 @@ uint8_t picocalc_sd_spi_xfer(void *ctx, uint8_t mosi) {
             if (command == 17 || command == 18 || command == 24 || command == 25) {
                 last_sd_sector = sd.arg;
             }
-            printf("[SD] CMD%d Arg:0x%08X\n", command, sd.arg);
             
             sd.state = SD_RESP;
             sd.resp_idx = 0;
@@ -243,7 +247,6 @@ uint8_t picocalc_sd_spi_xfer(void *ctx, uint8_t mosi) {
                 sd.resp[0] = 0x00;
                 sd.resp_len = 1;
             }
-            printf("[SD] CMD%d response set to 0x%02X\n", command, sd.resp[0]);
         }
         break;
 
@@ -268,7 +271,6 @@ uint8_t picocalc_sd_spi_xfer(void *ctx, uint8_t mosi) {
             miso = 0xFE; // Data token
             sd.state = SD_DATA;
             sd.data_idx = 0;
-            printf("[SD] Sending block %u\n", sd.block_addr);
         }
         break;
 
@@ -312,6 +314,11 @@ static int kb_tail = 0;
 static uint8_t last_i2c_cmd = 0;
 static int i2c_read_idx = 0;
 
+/* I2C transaction log: last 64 register writes */
+#define I2C_LOG_SIZE 64
+static uint8_t i2c_write_log[I2C_LOG_SIZE];
+static uint32_t i2c_write_count = 0;
+
 void picocalc_web_set_key(uint8_t key) {
     kb_buffer[kb_head] = key;
     kb_head = (kb_head + 1) % 256;
@@ -345,6 +352,8 @@ int picocalc_i2c_write(void *ctx, uint8_t data) {
     (void)ctx;
     last_i2c_cmd = data;
     i2c_read_idx = 0;
+    i2c_write_log[i2c_write_count % I2C_LOG_SIZE] = data;
+    i2c_write_count++;
     return 1; // ACK
 }
 
@@ -363,8 +372,6 @@ void picocalc_web_init(void) {
     reset_runtime_peripherals_web();
     
     log_uart_enabled = 1; // Enable UART tracing to circular buffer
-    cpu.debug_enabled = 1; // Enable internal CPU diagnostic prints
-    bus_log_uart(0, 1, 'H'); bus_log_uart(0, 1, 'e'); bus_log_uart(0, 1, 'l'); bus_log_uart(0, 1, 'l'); bus_log_uart(0, 1, 'o'); bus_log_uart(0, 1, '\n');
 
     // Initialize Virtual SD
     if (!virtual_sd_disk) {
@@ -381,7 +388,7 @@ void picocalc_web_init(void) {
     // Attach to SPI0 for SD Card
     spi_attach_device(0, picocalc_sd_spi_xfer, picocalc_sd_cs, NULL);
     
-    // Attach to I2C1 for keyboard
+    // Attach virtual keyboard controller (STM32) to I2C1 at address 0x1F
     i2c_attach_device(1, 0x1F, picocalc_i2c_write, picocalc_i2c_read, NULL, NULL, NULL);
 }
 
@@ -406,7 +413,58 @@ int picocalc_web_load_uf2(const uint8_t *buf, int size) {
         cpu_set_boot2(1);
         printf("[Web] Boot2 detected in firmware\n");
     }
-    
+
+    /* Pre-initialize the firmware options area at flash 0x100D0000.
+     *
+     * The PicoCalc/BRAMBLE firmware stores a validated options struct at
+     * 0x100D0000 in flash (897 bytes, separate from the main UF2 image).
+     * On blank flash (all 0xFF) the firmware enters USB recovery mode and
+     * hangs in a tight loop — unusable in the emulator.
+     *
+     * The struct must satisfy these compile-time checks:
+     *   [0..3]       = 0xE1473B93    (magic, LE)
+     *   [4]          ≤ 4             (interface channel)
+     *   [5]          ∈ {2,3,4,8}    (display family / USB class)
+     *   [8..11]      = 0x00020000   (LE, size field = 128 KB)
+     *   [0x12..0x15] ≠ 0            (non-zero field)
+     *   [0x20..0x23] ∈ [0xBB80, 0x668A0] (unsigned, size range check)
+     *   [0x77] | [0xE5] ≠ 0         (at least one flag set)
+     *   [0xEB] = 1                  (display-configured flag)
+     *
+     * Only write the stub if the flash area is blank (all 0xFF).
+     */
+    {
+        uint32_t opts_flash_offset = 0x100D0000 - 0x10000000; /* = 0xD0000 */
+        int blank = 1;
+        for (int k = 0; k < 4; k++) {
+            if (cpu.flash[opts_flash_offset + k] != 0xFF) { blank = 0; break; }
+        }
+        if (blank) {
+            printf("[Web] Options area at 0x100D0000 is blank — writing default stub\n");
+            uint8_t *opts = cpu.flash + opts_flash_offset;
+            /* zero the area first (flash was 0xFF; zero only 897 bytes to match copy count) */
+            memset(opts, 0x00, 897);
+            /* [0..3]: magic 0xE1473B93 in little-endian */
+            opts[0] = 0x93; opts[1] = 0x3B; opts[2] = 0x47; opts[3] = 0xE1;
+            /* [4]: interface/channel = 1 (SPI1 for PicoCalc ILI9488) */
+            opts[4] = 1;
+            /* [5]: display family = 2 (ILI9488 color TFT family) */
+            opts[5] = 2;
+            /* [8..11]: 0x00020000 little-endian (size field = 128 KB) */
+            opts[8] = 0x00; opts[9] = 0x00; opts[10] = 0x02; opts[11] = 0x00;
+            /* [0x18..0x1B]: field must be non-zero (validation check) */
+            opts[0x18] = 0x01;
+            /* [0x20..0x23]: 0x00039210 (midpoint of valid range [0xBB80, 0x668A0]) LE */
+            opts[0x20] = 0x10; opts[0x21] = 0x92; opts[0x22] = 0x03; opts[0x23] = 0x00;
+            /* [0x77]: non-zero flag */
+            opts[0x77] = 1;
+            /* [0xEB]: display-configured flag = 1 */
+            opts[0xEB] = 1;
+        } else {
+            printf("[Web] Options area at 0x100D0000 already programmed — leaving as-is\n");
+        }
+    }
+
     dual_core_init(); // Initializes state now that firmware is in memory
     cpu_reset_core(CORE0);
     return 1;
@@ -456,9 +514,22 @@ uint32_t picocalc_web_get_sp1(void) {
     return cores[CORE1].r[13];
 }
 
-EMSCRIPTEN_KEEPALIVE uint8_t picocalc_web_get_last_sd_cmd() { return last_sd_cmd; }
-EMSCRIPTEN_KEEPALIVE uint32_t picocalc_web_get_last_sd_sector() { return last_sd_sector; }
-EMSCRIPTEN_KEEPALIVE uint8_t picocalc_web_get_last_sd_miso() { return sd.last_miso; }
+EMSCRIPTEN_KEEPALIVE
+uint32_t picocalc_web_get_reg(int core, int reg) {
+    if (core < 0 || core >= NUM_CORES) return 0;
+    if (reg < 0 || reg > 16) return 0;
+    return cores[core].r[reg];
+}
+
+EMSCRIPTEN_KEEPALIVE uint8_t picocalc_web_get_last_sd_cmd(void) { return last_sd_cmd; }
+EMSCRIPTEN_KEEPALIVE uint32_t picocalc_web_get_last_sd_sector(void) { return last_sd_sector; }
+EMSCRIPTEN_KEEPALIVE uint8_t picocalc_web_get_last_sd_miso(void) { return sd.last_miso; }
+
+EMSCRIPTEN_KEEPALIVE uint32_t picocalc_web_get_i2c_write_count(void) { return i2c_write_count; }
+EMSCRIPTEN_KEEPALIVE uint8_t  picocalc_web_get_i2c_write_log(uint32_t idx) {
+    if (idx >= I2C_LOG_SIZE) return 0xFF;
+    return i2c_write_log[idx % I2C_LOG_SIZE];
+}
 
 EMSCRIPTEN_KEEPALIVE
 uint32_t picocalc_web_get_total_steps(void) {
@@ -607,3 +678,112 @@ void picocalc_web_start(void) {
     // 'unwind' string thrown at it (which ccall async can't handle).
     emscripten_set_main_loop(picocalc_emscripten_loop, 0, 0);
 }
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t picocalc_web_run_steps(uint32_t n) {
+    static int fn_entered = 0;   /* entered 0x10001478 function */
+    static int error_logged = 0; /* logged the error-branch hit */
+    for (uint32_t i = 0; i < n; i++) {
+        if (cores[CORE0].is_halted && cores[CORE1].is_halted) break;
+        uint32_t pre_pc = cores[CORE0].r[15];
+        dual_core_step();
+        total_steps_count++;
+        pio_step();
+        usb_step();
+        uint32_t cur_pc = cores[CORE0].r[15];
+
+        /* Hook A: catch call into mystery function at 0x10001478 */
+        if (!fn_entered &&
+            (pre_pc < 0x10001478 || pre_pc > 0x1000159A) &&
+            cur_pc >= 0x10001478 && cur_pc <= 0x1000159A) {
+            fn_entered = 1;
+            fprintf(stderr, "[FN_ENTER] step=%llu pre_pc=0x%08X cur_pc=0x%08X\n",
+                    (unsigned long long)total_steps_count, pre_pc, cur_pc);
+            fprintf(stderr, "[FN_REGS] r0=0x%08X r1=0x%08X r2=0x%08X r3=0x%08X\n",
+                    cores[CORE0].r[0], cores[CORE0].r[1],
+                    cores[CORE0].r[2], cores[CORE0].r[3]);
+            fprintf(stderr, "[FN_REGS] r8=0x%08X r9=0x%08X LR=0x%08X SP=0x%08X\n",
+                    cores[CORE0].r[8], cores[CORE0].r[9],
+                    cores[CORE0].r[14], cores[CORE0].r[13]);
+            /* Dump struct at 0x2002E700 (r3 will point here later) */
+            fprintf(stderr, "[STRUCT@0x2002E700]");
+            for (int k = 0; k < 32; k++)
+                fprintf(stderr, " %02X", mem_read8(0x2002E700 + k));
+            fprintf(stderr, "\n");
+            /* Dump the r0 argument struct */
+            uint32_t r0 = cores[CORE0].r[0];
+            fprintf(stderr, "[ARG0@0x%08X]", r0);
+            for (int k = 0; k < 32; k++)
+                fprintf(stderr, " %02X", mem_read8(r0 + k));
+            fprintf(stderr, "\n");
+        }
+
+        /* Hook B: key branch-point tracing inside 0x10001478 function */
+        if (fn_entered && !error_logged) {
+            /* 0x1001B1E4: start of copy loop — log source pointer r4 and dest r0 */
+            if (cur_pc == 0x1001B1E4) {
+                static int copy_hook_done = 0;
+                if (!copy_hook_done) {
+                    copy_hook_done = 1;
+                    uint32_t src = cores[CORE0].r[4]; /* r4 = source pointer */
+                    uint32_t dst = cores[CORE0].r[0]; /* r0 = destination (struct base) */
+                    uint32_t cnt = cores[CORE0].r[1]; /* r1 = count */
+                    fprintf(stderr, "[COPY_LOOP] src=0x%08X dst=0x%08X cnt=%u\n", src, dst, cnt);
+                    fprintf(stderr, "[COPY_SRC_BYTES]");
+                    for (uint32_t k = 0; k < cnt && k < 48; k++)
+                        fprintf(stderr, " %02X", mem_read8(src + k));
+                    fprintf(stderr, "\n");
+                }
+            }
+            /* 0x10001504: BEQ error if assembled [r3+0x18..0x1B] == 0 */
+            if (cur_pc == 0x10001506) {
+                static int b04_done = 0;
+                if (!b04_done) {
+                    b04_done = 1;
+                    uint32_t r2 = cores[CORE0].r[2];
+                    uint32_t r3 = cores[CORE0].r[3];
+                    fprintf(stderr, "[CHECK_0x18] r2(assembled32)=0x%08X r3(struct)=0x%08X\n", r2, r3);
+                    fprintf(stderr, "[STRUCT_NOW@0x%08X]", r3);
+                    for (int k = 0; k < 48; k++)
+                        fprintf(stderr, " %02X", mem_read8(r3 + k));
+                    fprintf(stderr, "\n");
+                }
+            }
+            /* After LDRB r3,[r3,#5] at 0x10001506 → cur_pc==0x10001508: r3=byte5 value */
+            if (cur_pc == 0x10001508) {
+                static int b06_done = 0;
+                if (!b06_done) {
+                    b06_done = 1;
+                    uint32_t byte5 = cores[CORE0].r[3];
+                    fprintf(stderr, "[BYTE5_CHECK] byte5=0x%02X (%u) expected {2,3,4,8}\n",
+                            (uint8_t)byte5, (uint8_t)byte5);
+                }
+            }
+            /* 0x1000150A: after SUBS r2,r3,#2 and CMP r2,#2: BLS check */
+            /* 0x10001510: BNE error if byte5 not in {2,3,4,8} */
+            if (cur_pc == 0x10001512) {
+                fprintf(stderr, "[BYTE5_PASS] byte5 in expected set, continuing\n");
+            }
+            /* 0x10001588: error output function call — this is the failure */
+            if (cur_pc == 0x10001588 || cur_pc == 0x1001C5A4) {
+                error_logged = 1;
+                fprintf(stderr, "[ERROR_PATH] at step=%llu PC=0x%08X\n",
+                        (unsigned long long)total_steps_count, cur_pc);
+                fprintf(stderr, "[ERROR_REGS] r0-r3: 0x%08X 0x%08X 0x%08X 0x%08X\n",
+                        cores[CORE0].r[0], cores[CORE0].r[1],
+                        cores[CORE0].r[2], cores[CORE0].r[3]);
+            }
+            /* 0x1000159C: success path */
+            if (cur_pc == 0x1000159C) {
+                fprintf(stderr, "[SUCCESS_PATH] r3=0x%08X at step=%llu\n",
+                        cores[CORE0].r[3], (unsigned long long)total_steps_count);
+            }
+        }
+    }
+    return (uint32_t)total_steps_count;
+}
+
+
+
+
+

@@ -17,8 +17,19 @@
 #include <signal.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#if !defined(__EMSCRIPTEN__)
+#include <sys/file.h>
+#endif
+#if defined(__EMSCRIPTEN__)
+#define LOCK_SH 1
+#define LOCK_EX 2
+#define LOCK_NB 4
+#define LOCK_UN 8
+#endif
+
 #include <time.h>
 #include "corepool.h"
 #include "emulator.h"
@@ -71,7 +82,9 @@ void corepool_init(void) {
 
     pthread_condattr_t attr;
     pthread_condattr_init(&attr);
+    #ifdef __linux__
     pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+#endif
     pthread_cond_init(&corepool.wfi_cond, &attr);
     pthread_condattr_destroy(&attr);
 
@@ -113,6 +126,14 @@ static const char *corepool_registry_path(void) {
 }
 
 static FILE *registry_open_locked(int lock_type, int *fd_out) {
+#if defined(__EMSCRIPTEN__)
+    (void)lock_type;
+    FILE *f = fopen(corepool_registry_path(), "r+");
+    if (!f) f = fopen(corepool_registry_path(), "w+");
+    if (!f) return NULL;
+    *fd_out = fileno(f);
+    return f;
+#else
     FILE *f = fopen(corepool_registry_path(), "r+");
     if (!f) {
         f = fopen(corepool_registry_path(), "w+");
@@ -129,10 +150,15 @@ static FILE *registry_open_locked(int lock_type, int *fd_out) {
 
     *fd_out = fd;
     return f;
+#endif
 }
 
 static void registry_close_locked(FILE *f, int fd) {
+#if !defined(__EMSCRIPTEN__)
     flock(fd, LOCK_UN);
+#else
+    (void)fd;
+#endif
     fclose(f);
 }
 
@@ -187,7 +213,7 @@ void corepool_register(int cores) {
     /* Remove any existing entry for this PID */
     pid_t my_pid = getpid();
     for (int i = 0; i < count; i++) {
-        if (entries[i].pid == my_pid) {
+        if ((uint32_t)entries[i].pid == (uint32_t)my_pid) {
             entries[i] = entries[count - 1];
             count--;
             i--;
@@ -226,7 +252,7 @@ void corepool_unregister(void) {
 
     pid_t my_pid = getpid();
     for (int i = 0; i < count; i++) {
-        if (entries[i].pid == my_pid) {
+        if ((uint32_t)entries[i].pid == (uint32_t)my_pid) {
             entries[i] = entries[count - 1];
             count--;
             i--;

@@ -196,8 +196,8 @@ static void t32_bl(uint32_t pc, uint16_t upper, uint16_t lower) {
     uint32_t J1    = (lower >> 13) & 1;
     uint32_t J2    = (lower >> 11) & 1;
     uint32_t imm11 = lower & 0x7FF;
-    uint32_t I1    = !(J1 ^ S) & 1;
-    uint32_t I2    = !(J2 ^ S) & 1;
+    uint32_t I1    = (!(J1 ^ S)) & 1;
+    uint32_t I2    = (!(J2 ^ S)) & 1;
     int32_t  offset = (int32_t)((S << 24) | (I1 << 23) | (I2 << 22) | (imm10 << 12) | (imm11 << 1));
     if (S) offset |= (int32_t)0xFF000000;  /* sign-extend from bit 24 */
     cpu.r[14] = (pc + 4) | 1u;

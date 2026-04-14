@@ -595,9 +595,6 @@ void usb_write32(uint32_t addr, uint32_t val) {
     /* DPRAM writes (no alias for DPRAM) */
     if (base >= USBCTRL_DPRAM_BASE && base < USBCTRL_DPRAM_BASE + USBCTRL_DPRAM_SIZE) {
         uint32_t off = base - USBCTRL_DPRAM_BASE;
-        if (off < 0x100) {
-            printf("[MAILBOX] Core %d WRITE 0x%08X to 0x%08X\n", get_active_core(), val, base);
-        }
         if (alias == 0) {
             memcpy(&usb_state.dpram[off], &val, 4);
         } else {

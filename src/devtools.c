@@ -30,7 +30,6 @@ void semihosting_init(void) {
 int sh_activity_count = 0;
 
 static uint32_t sh_read32(uint32_t addr) { return mem_read32(addr); }
-static uint16_t sh_read16(uint32_t addr) { return mem_read16(addr); }
 static uint8_t sh_read8(uint32_t addr) { return mem_read8(addr); }
 
 int semihosting_handle(void) {
@@ -963,13 +962,14 @@ int fault_add(const char *spec) {
     memset(fi, 0, sizeof(*fi));
 
     char type[32];
-    uint64_t cycle;
+    unsigned long long cycle_ull;
     uint32_t addr = 0;
 
-    if (sscanf(spec, "%31[^:]:%lu:%x", type, &cycle, &addr) < 2) {
+    if (sscanf(spec, "%31[^:]:%llu:%x", type, &cycle_ull, &addr) < 2) {
         fprintf(stderr, "[Fault] Invalid spec: %s\n", spec);
         return -1;
     }
+    uint64_t trigger_cycle = (uint64_t)cycle_ull;
 
     if (strcmp(type, "flash_bitflip") == 0) {
         fi->type = FAULT_FLASH_BITFLIP;
@@ -984,10 +984,10 @@ int fault_add(const char *spec) {
         return -1;
     }
 
-    fi->trigger_cycle = cycle;
+    fi->trigger_cycle = trigger_cycle;
     fi->fired = 0;
     fault_count++;
-    fprintf(stderr, "[Fault] Scheduled %s at cycle %lu\n", type, (unsigned long)cycle);
+    fprintf(stderr, "[Fault] Scheduled %s at cycle %llu\n", type, (unsigned long long)trigger_cycle);
     return 0;
 }
 

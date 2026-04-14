@@ -14,10 +14,6 @@ nvic_state_t nvic_states[2] = {{0}};
 /* Per-core SysTick state */
 systick_state_t systick_states[2] = {{0}};
 
-/* Track last IRQ signal for duplicate detection */
-static uint32_t last_irq_signal = 0xFFFFFFFF;
-static uint32_t irq_signal_count = 0;
-
 /* Helper: get current core's NVIC state */
 static inline nvic_state_t *nvic_cur(void) {
     return &nvic_states[get_active_core()];
@@ -52,9 +48,6 @@ void nvic_reset(void) {
     for (int c = 0; c < 2; c++) {
         memset(&systick_states[c], 0, sizeof(systick_state_t));
     }
-
-    last_irq_signal = 0xFFFFFFFF;
-    irq_signal_count = 0;
 }
 
 /* Initialize SysTick */
@@ -80,10 +73,6 @@ void systick_reset(void) {
  * in the same cycle, and the reload value is what the next cycle sees.
  */
 void systick_tick(uint32_t cycles) {
-    /* Turbo Mode: Slow down virtual time by 2x during boot to prevent watchdog resets 
-     * while the emulator is busy with heavy peripheral I/O. */
-    cycles /= 2;
-
     systick_state_t *st = systick_cur();
     if (!(st->csr & 1)) return; /* Not enabled */
 
@@ -506,15 +495,6 @@ void nvic_signal_core_irq(int core_id, uint32_t irq) {
  * Each core independently decides whether to handle based on its own enable mask. */
 void nvic_signal_irq(uint32_t irq) {
     if (irq < NUM_EXTERNAL_IRQS) {
-        irq_signal_count++;
-
-        /* if (cpu.debug_enabled) {
-            printf("[NVIC] *** SIGNAL IRQ %u (count=%u) ***\n",
-                   irq, irq_signal_count);
-        } */
-
-        last_irq_signal = irq;
-
         /* IRQ latency profiling: record pend time */
         if (__builtin_expect(irq_latency_enabled, 0))
             irq_latency_pend(irq);
