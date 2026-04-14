@@ -4405,6 +4405,8 @@ var _picocalc_web_set_key,
   _picocalc_web_get_spi_count,
   _picocalc_web_get_pixel_count,
   _picocalc_web_get_pc0,
+  _picocalc_web_set_verbose,
+  _picocalc_web_get_verbose,
   _picocalc_web_get_pc1,
   _picocalc_web_get_sp0,
   _picocalc_web_get_sp1,
@@ -4468,6 +4470,8 @@ function assignWasmExports(wasmExports) {
   _picocalc_web_get_spi_count = Module['_picocalc_web_get_spi_count'] = wasmExports['picocalc_web_get_spi_count'];
   _picocalc_web_get_pixel_count = Module['_picocalc_web_get_pixel_count'] = wasmExports['picocalc_web_get_pixel_count'];
   _picocalc_web_get_pc0 = Module['_picocalc_web_get_pc0'] = wasmExports['picocalc_web_get_pc0'];
+  _picocalc_web_set_verbose = Module['_picocalc_web_set_verbose'] = wasmExports['picocalc_web_set_verbose'];
+  _picocalc_web_get_verbose = Module['_picocalc_web_get_verbose'] = wasmExports['picocalc_web_get_verbose'];
   _picocalc_web_get_pc1 = Module['_picocalc_web_get_pc1'] = wasmExports['picocalc_web_get_pc1'];
   _picocalc_web_get_sp0 = Module['_picocalc_web_get_sp0'] = wasmExports['picocalc_web_get_sp0'];
   _picocalc_web_get_sp1 = Module['_picocalc_web_get_sp1'] = wasmExports['picocalc_web_get_sp1'];

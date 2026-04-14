@@ -505,7 +505,7 @@ void clocks_write32(uint32_t addr, uint32_t val) {
     else if (base_aligned == WATCHDOG_BASE) pname = "WATCHDOG";
     else if (base_aligned == PSM_BASE) pname = "PSM";
     else if (base_aligned == ROSC_BASE) pname = "ROSC";
-    fprintf(stderr, "[CLOCKS W] %s+0x%03X [%s] = 0x%08X\n",
+    EMU_ELOG(2, "[CLOCKS W] %s+0x%03X [%s] = 0x%08X\n",
             pname, addr & 0xFFF, alias_names[alias], val);
 
     if (base_aligned == RESETS_BASE)

@@ -366,7 +366,7 @@ void dummy_linker_fix(void) {
 }
 
 void picocalc_web_init(void) {
-    printf("[Web] Initializing emulator...\n");
+    EMU_LOG(1, "[Web] Initializing emulator...\n");
     cpu_init();
     memset(cpu.flash, 0xFF, FLASH_SIZE_MAX);
     reset_runtime_peripherals_web();
@@ -394,7 +394,7 @@ void picocalc_web_init(void) {
 
 EMSCRIPTEN_KEEPALIVE
 int picocalc_web_load_uf2(const uint8_t *buf, int size) {
-    printf("[Web] Loading UF2 buffer of size %d...\n", size);
+    EMU_LOG(1, "[Web] Loading UF2 buffer of size %d...\n", size);
     
     // Bramble has uf2 loader that reads from file.
     // Let's dump the buffer to a virtual file then load it.
@@ -411,7 +411,7 @@ int picocalc_web_load_uf2(const uint8_t *buf, int size) {
     extern void cpu_set_boot2(int);
     if (cpu_has_boot2()) {
         cpu_set_boot2(1);
-        printf("[Web] Boot2 detected in firmware\n");
+        EMU_LOG(1, "[Web] Boot2 detected in firmware\n");
     }
 
     /* Pre-initialize the firmware options area at flash 0x100D0000.
@@ -440,7 +440,7 @@ int picocalc_web_load_uf2(const uint8_t *buf, int size) {
             if (cpu.flash[opts_flash_offset + k] != 0xFF) { blank = 0; break; }
         }
         if (blank) {
-            printf("[Web] Options area at 0x100D0000 is blank — writing default stub\n");
+            EMU_LOG(1, "[Web] Options area at 0x100D0000 is blank — writing default stub\n");
             uint8_t *opts = cpu.flash + opts_flash_offset;
             /* zero the area first (flash was 0xFF; zero only 897 bytes to match copy count) */
             memset(opts, 0x00, 897);
@@ -461,7 +461,7 @@ int picocalc_web_load_uf2(const uint8_t *buf, int size) {
             /* [0xEB]: display-configured flag = 1 */
             opts[0xEB] = 1;
         } else {
-            printf("[Web] Options area at 0x100D0000 already programmed — leaving as-is\n");
+            EMU_LOG(1, "[Web] Options area at 0x100D0000 already programmed — leaving as-is\n");
         }
     }
 
@@ -475,7 +475,7 @@ int picocalc_web_load_sd_image(const uint8_t *buf, int size) {
     if (!virtual_sd_disk) return 0;
     int to_copy = (size < SD_DISK_SIZE) ? size : SD_DISK_SIZE;
     memcpy(virtual_sd_disk, buf, to_copy);
-    printf("[Web] Loaded %d bytes into virtual SD\n", to_copy);
+    EMU_LOG(1, "[Web] Loaded %d bytes into virtual SD\n", to_copy);
     return to_copy;
 }
 
@@ -497,6 +497,16 @@ uint32_t picocalc_web_get_pixel_count(void) {
 EMSCRIPTEN_KEEPALIVE
 uint32_t picocalc_web_get_pc0(void) {
     return cores[CORE0].r[15];
+}
+
+EMSCRIPTEN_KEEPALIVE
+void picocalc_web_set_verbose(int level) {
+    bramble_verbose = level;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int picocalc_web_get_verbose(void) {
+    return bramble_verbose;
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -649,11 +659,13 @@ void picocalc_web_get_memory_range(uint32_t addr, uint32_t len, uint8_t *out_dat
 }
 
 void picocalc_emscripten_loop(void) {
-    // Run ~500k instructions per frame (~60fps → ~30M steps/sec → ~25% RP2040 speed)
-    for(int i=0; i<500000; i++) {
-        if (!cores[CORE0].is_halted || !cores[CORE1].is_halted) {
-            // Update traces
-            // Update traces
+    // Time-budgeted loop: run as many steps as possible within 12ms per frame.
+    // This saturates the CPU on fast machines while never blocking the browser UI.
+    // The time check is amortized every 2000 steps to keep overhead negligible.
+    const double deadline = emscripten_get_now() + 12.0;
+    for (;;) {
+        for (int i = 0; i < 2000; i++) {
+            if (cores[CORE0].is_halted && cores[CORE1].is_halted) return;
             for (int c = 0; c < NUM_CORES; c++) {
                 uint32_t pc = cores[c].r[15];
                 if (pc != pc_trace[c][(pc_trace_idx[c] - 1) & 15].pc) {
@@ -666,9 +678,8 @@ void picocalc_emscripten_loop(void) {
             total_steps_count++;
             pio_step();
             usb_step();
-        } else {
-            break;
         }
+        if (emscripten_get_now() >= deadline) break;
     }
 }
 
@@ -697,25 +708,27 @@ uint32_t picocalc_web_run_steps(uint32_t n) {
             (pre_pc < 0x10001478 || pre_pc > 0x1000159A) &&
             cur_pc >= 0x10001478 && cur_pc <= 0x1000159A) {
             fn_entered = 1;
-            fprintf(stderr, "[FN_ENTER] step=%llu pre_pc=0x%08X cur_pc=0x%08X\n",
+            EMU_ELOG(2, "[FN_ENTER] step=%llu pre_pc=0x%08X cur_pc=0x%08X\n",
                     (unsigned long long)total_steps_count, pre_pc, cur_pc);
-            fprintf(stderr, "[FN_REGS] r0=0x%08X r1=0x%08X r2=0x%08X r3=0x%08X\n",
+            EMU_ELOG(2, "[FN_REGS] r0=0x%08X r1=0x%08X r2=0x%08X r3=0x%08X\n",
                     cores[CORE0].r[0], cores[CORE0].r[1],
                     cores[CORE0].r[2], cores[CORE0].r[3]);
-            fprintf(stderr, "[FN_REGS] r8=0x%08X r9=0x%08X LR=0x%08X SP=0x%08X\n",
+            EMU_ELOG(2, "[FN_REGS] r8=0x%08X r9=0x%08X LR=0x%08X SP=0x%08X\n",
                     cores[CORE0].r[8], cores[CORE0].r[9],
                     cores[CORE0].r[14], cores[CORE0].r[13]);
             /* Dump struct at 0x2002E700 (r3 will point here later) */
-            fprintf(stderr, "[STRUCT@0x2002E700]");
-            for (int k = 0; k < 32; k++)
-                fprintf(stderr, " %02X", mem_read8(0x2002E700 + k));
-            fprintf(stderr, "\n");
-            /* Dump the r0 argument struct */
-            uint32_t r0 = cores[CORE0].r[0];
-            fprintf(stderr, "[ARG0@0x%08X]", r0);
-            for (int k = 0; k < 32; k++)
-                fprintf(stderr, " %02X", mem_read8(r0 + k));
-            fprintf(stderr, "\n");
+            if (bramble_verbose >= 2) {
+                fprintf(stderr, "[STRUCT@0x2002E700]");
+                for (int k = 0; k < 32; k++)
+                    fprintf(stderr, " %02X", mem_read8(0x2002E700 + k));
+                fprintf(stderr, "\n");
+                /* Dump the r0 argument struct */
+                uint32_t r0 = cores[CORE0].r[0];
+                fprintf(stderr, "[ARG0@0x%08X]", r0);
+                for (int k = 0; k < 32; k++)
+                    fprintf(stderr, " %02X", mem_read8(r0 + k));
+                fprintf(stderr, "\n");
+            }
         }
 
         /* Hook B: key branch-point tracing inside 0x10001478 function */
@@ -728,11 +741,13 @@ uint32_t picocalc_web_run_steps(uint32_t n) {
                     uint32_t src = cores[CORE0].r[4]; /* r4 = source pointer */
                     uint32_t dst = cores[CORE0].r[0]; /* r0 = destination (struct base) */
                     uint32_t cnt = cores[CORE0].r[1]; /* r1 = count */
-                    fprintf(stderr, "[COPY_LOOP] src=0x%08X dst=0x%08X cnt=%u\n", src, dst, cnt);
-                    fprintf(stderr, "[COPY_SRC_BYTES]");
-                    for (uint32_t k = 0; k < cnt && k < 48; k++)
-                        fprintf(stderr, " %02X", mem_read8(src + k));
-                    fprintf(stderr, "\n");
+                    EMU_ELOG(2, "[COPY_LOOP] src=0x%08X dst=0x%08X cnt=%u\n", src, dst, cnt);
+                    if (bramble_verbose >= 2) {
+                        fprintf(stderr, "[COPY_SRC_BYTES]");
+                        for (uint32_t k = 0; k < cnt && k < 48; k++)
+                            fprintf(stderr, " %02X", mem_read8(src + k));
+                        fprintf(stderr, "\n");
+                    }
                 }
             }
             /* 0x10001504: BEQ error if assembled [r3+0x18..0x1B] == 0 */
@@ -742,11 +757,13 @@ uint32_t picocalc_web_run_steps(uint32_t n) {
                     b04_done = 1;
                     uint32_t r2 = cores[CORE0].r[2];
                     uint32_t r3 = cores[CORE0].r[3];
-                    fprintf(stderr, "[CHECK_0x18] r2(assembled32)=0x%08X r3(struct)=0x%08X\n", r2, r3);
-                    fprintf(stderr, "[STRUCT_NOW@0x%08X]", r3);
-                    for (int k = 0; k < 48; k++)
-                        fprintf(stderr, " %02X", mem_read8(r3 + k));
-                    fprintf(stderr, "\n");
+                    EMU_ELOG(2, "[CHECK_0x18] r2(assembled32)=0x%08X r3(struct)=0x%08X\n", r2, r3);
+                    if (bramble_verbose >= 2) {
+                        fprintf(stderr, "[STRUCT_NOW@0x%08X]", r3);
+                        for (int k = 0; k < 48; k++)
+                            fprintf(stderr, " %02X", mem_read8(r3 + k));
+                        fprintf(stderr, "\n");
+                    }
                 }
             }
             /* After LDRB r3,[r3,#5] at 0x10001506 → cur_pc==0x10001508: r3=byte5 value */
@@ -755,27 +772,27 @@ uint32_t picocalc_web_run_steps(uint32_t n) {
                 if (!b06_done) {
                     b06_done = 1;
                     uint32_t byte5 = cores[CORE0].r[3];
-                    fprintf(stderr, "[BYTE5_CHECK] byte5=0x%02X (%u) expected {2,3,4,8}\n",
+                    EMU_ELOG(2, "[BYTE5_CHECK] byte5=0x%02X (%u) expected {2,3,4,8}\n",
                             (uint8_t)byte5, (uint8_t)byte5);
                 }
             }
             /* 0x1000150A: after SUBS r2,r3,#2 and CMP r2,#2: BLS check */
             /* 0x10001510: BNE error if byte5 not in {2,3,4,8} */
             if (cur_pc == 0x10001512) {
-                fprintf(stderr, "[BYTE5_PASS] byte5 in expected set, continuing\n");
+                EMU_ELOG(2, "[BYTE5_PASS] byte5 in expected set, continuing\n");
             }
             /* 0x10001588: error output function call — this is the failure */
             if (cur_pc == 0x10001588 || cur_pc == 0x1001C5A4) {
                 error_logged = 1;
-                fprintf(stderr, "[ERROR_PATH] at step=%llu PC=0x%08X\n",
+                EMU_ELOG(2, "[ERROR_PATH] at step=%llu PC=0x%08X\n",
                         (unsigned long long)total_steps_count, cur_pc);
-                fprintf(stderr, "[ERROR_REGS] r0-r3: 0x%08X 0x%08X 0x%08X 0x%08X\n",
+                EMU_ELOG(2, "[ERROR_REGS] r0-r3: 0x%08X 0x%08X 0x%08X 0x%08X\n",
                         cores[CORE0].r[0], cores[CORE0].r[1],
                         cores[CORE0].r[2], cores[CORE0].r[3]);
             }
             /* 0x1000159C: success path */
             if (cur_pc == 0x1000159C) {
-                fprintf(stderr, "[SUCCESS_PATH] r3=0x%08X at step=%llu\n",
+                EMU_ELOG(2, "[SUCCESS_PATH] r3=0x%08X at step=%llu\n",
                         cores[CORE0].r[3], (unsigned long long)total_steps_count);
             }
         }

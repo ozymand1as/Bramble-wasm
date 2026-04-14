@@ -165,7 +165,7 @@ void nvic_enable_irq(uint32_t irq) {
     if (irq < NUM_EXTERNAL_IRQS) {
         nvic_state_t *ns = nvic_cur();
         ns->enable |= (1 << irq);
-        printf("[NVIC] Core %d: ENABLED IRQ %u (enable mask=0x%08X)\n",
+        EMU_LOG(2, "[NVIC] Core %d: ENABLED IRQ %u (enable mask=0x%08X)\n",
                get_active_core(), irq, ns->enable);
     }
 }

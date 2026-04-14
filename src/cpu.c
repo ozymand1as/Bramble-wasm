@@ -29,6 +29,10 @@
 cpu_state_t cpu = {0};
 int pc_updated = 0;
 
+/* Runtime verbosity level (defined here, declared extern in emulator.h).
+ *   0 = silent, 1 = normal boot messages, 2 = verbose per-step trace */
+int bramble_verbose = 1;
+
 /* ========================================================================
  * Cycle-Accurate Timing
  * ======================================================================== */
@@ -489,16 +493,16 @@ void jit_invalidate_all(void) {
 
 void jit_report_stats(void) {
     if (!jit_enabled) return;
-    fprintf(stderr, " JIT blocks compiled: %llu\n", (unsigned long long)jit_block_compiles);
-    fprintf(stderr, " JIT block executions: %llu\n", (unsigned long long)jit_block_exec);
-    fprintf(stderr, " JIT instructions accelerated: %llu\n", (unsigned long long)jit_insns_saved);
+    EMU_ELOG(1, " JIT blocks compiled: %llu\n", (unsigned long long)jit_block_compiles);
+    EMU_ELOG(1, " JIT block executions: %llu\n", (unsigned long long)jit_block_exec);
+    EMU_ELOG(1, " JIT instructions accelerated: %llu\n", (unsigned long long)jit_insns_saved);
 }
 
 void icache_report_stats(void) {
     if (!icache_enabled) return;
     uint64_t total = icache_hits + icache_misses;
     double hit_rate = total > 0 ? (double)icache_hits / (double)total * 100.0 : 0.0;
-    fprintf(stderr, " ICache hits: %llu, misses: %llu (%.1f%% hit rate)\n",
+    EMU_ELOG(1, " ICache hits: %llu, misses: %llu (%.1f%% hit rate)\n",
             (unsigned long long)icache_hits, (unsigned long long)icache_misses, hit_rate);
 }
 
@@ -820,20 +824,20 @@ void cpu_reset_from_flash(void) {
 
     // Check for empty/zeroed firmware image
     if (initial_sp == 0 && reset_vector == 0) {
-        fprintf(stderr, "[Boot] WARNING: Empty or zeroed firmware image detected. CPU halted gracefully.\n");
+        EMU_ELOG(1, "[Boot] WARNING: Empty or zeroed firmware image detected. CPU halted gracefully.\n");
         cpu.r[15] = 0xFFFFFFFF;
         return;
     }
 
     if (initial_sp < RAM_BASE || initial_sp > RAM_BASE + RAM_SIZE) {
-        fprintf(stderr, "[Boot] ERROR: Invalid SP 0x%08X (not in RAM 0x%08X-0x%08X)\n",
+        EMU_ELOG(1, "[Boot] ERROR: Invalid SP 0x%08X (not in RAM 0x%08X-0x%08X)\n",
                initial_sp, RAM_BASE, RAM_BASE + RAM_SIZE);
         cpu.r[15] = 0xFFFFFFFF;
         return;
     }
 
     if ((reset_vector & 0x1) == 0) {
-        fprintf(stderr, "[Boot] ERROR: Invalid reset vector 0x%08X (Thumb bit not set)\n",
+        EMU_ELOG(1, "[Boot] ERROR: Invalid reset vector 0x%08X (Thumb bit not set)\n",
                reset_vector);
         cpu.r[15] = 0xFFFFFFFF;
         return;
@@ -844,11 +848,11 @@ void cpu_reset_from_flash(void) {
     cpu.r[14] = 0xFFFFFFFF;
     cpu.xpsr = 0x01000000;
 
-    fprintf(stderr, "[Boot] Reset complete:\n");
-    fprintf(stderr, "[Boot] VTOR = 0x%08X\n", cpu.vtor);
-    fprintf(stderr, "[Boot] SP = 0x%08X\n", cpu.r[13]);
-    fprintf(stderr, "[Boot] PC = 0x%08X\n", cpu.r[15]);
-    fprintf(stderr, "[Boot] xPSR = 0x%08X\n", cpu.xpsr);
+    EMU_ELOG(1, "[Boot] Reset complete:\n");
+    EMU_ELOG(1, "[Boot] VTOR = 0x%08X\n", cpu.vtor);
+    EMU_ELOG(1, "[Boot] SP = 0x%08X\n", cpu.r[13]);
+    EMU_ELOG(1, "[Boot] PC = 0x%08X\n", cpu.r[15]);
+    EMU_ELOG(1, "[Boot] xPSR = 0x%08X\n", cpu.xpsr);
 }
 
 /* Allow execution from both flash and RAM */
@@ -899,7 +903,7 @@ void cpu_exception_entry(uint32_t vector_num) {
      * HardFault has fixed priority -1. If we're already in HardFault and another
      * fault occurs, the real Cortex-M0+ enters lockup (core halts). */
     if (vector_num == EXC_HARDFAULT && cpu.current_irq == EXC_HARDFAULT) {
-        printf("[CPU] Core %d ENTERING LOCKUP: double-fault (HardFault during HardFault) at PC=0x%08X\n",
+        EMU_LOG(1, "[CPU] Core %d ENTERING LOCKUP: double-fault (HardFault during HardFault) at PC=0x%08X\n",
                ac, cpu.r[15]);
         cores[ac].is_halted = 1;
         cpu.r[15] = 0xFFFFFFFF;
@@ -1460,10 +1464,10 @@ void dual_core_init(void) {
         cores[i].current_irq = 0xFFFFFFFF;
         cores[i].primask = 0;
 
-        fprintf(stderr, "[CORE%d] Initialized (halted: %d)\n", i, cores[i].is_halted);
+        EMU_ELOG(1, "[CORE%d] Initialized (halted: %d)\n", i, cores[i].is_halted);
     }
 
-    fprintf(stderr, "[Boot] Firmware in shared flash (%u bytes), SRAM shared across both cores (%u bytes)\n",
+    EMU_ELOG(1, "[Boot] Firmware in shared flash (%u bytes), SRAM shared across both cores (%u bytes)\n",
            FLASH_SIZE, RAM_SIZE);
 
     /* Reset instruction cache */
@@ -1478,7 +1482,7 @@ void dual_core_init(void) {
     cores[CORE0].r[15] = reset_vector & ~1;
 
     if (initial_sp != 0 || reset_vector != 0) {
-        fprintf(stderr, "[Boot] Vector table loaded: SP=0x%08X, PC=0x%08X\n",
+        EMU_ELOG(1, "[Boot] Vector table loaded: SP=0x%08X, PC=0x%08X\n",
                initial_sp, reset_vector & ~1);
     }
 
@@ -1561,13 +1565,13 @@ void cpu_dump_debug_state(int core_id) {
      uint32_t last_pc = pc_trace[core_id][(pc_trace_idx[core_id] - 1) & 15].pc;
      uint32_t *r = cores[core_id].r;
      
-     printf("[CORE %d] DEBUG STATE PC: 0x%08X (Last PC before halt: 0x%08X)\n", core_id, r[15], last_pc);
-     printf("  R0:%08X R1:%08X R2:%08X R3:%08X\n", r[0], r[1], r[2], r[3]);
-     printf("  R4:%08X R5:%08X R6:%08X R7:%08X\n", r[4], r[5], r[6], r[7]);
-     printf("  R8:%08X R9:%08X R10:%08X R11:%08X\n", r[8], r[9], r[10], r[11]);
-     printf("  R12:%08X SP:%08X LR:%08X PC:%08X\n", r[12], r[13], r[14], r[15]);
-     printf("  NVIC ENABLE:0x%08X PENDING:0x%08X\n", nvic_states[core_id].enable, nvic_states[core_id].pending);
-     printf("  MEM[PC]: %04X %04X %04X %04X %04X %04X %04X %04X\n", 
+     EMU_LOG(1, "[CORE %d] DEBUG STATE PC: 0x%08X (Last PC before halt: 0x%08X)\n", core_id, r[15], last_pc);
+     EMU_LOG(1, "  R0:%08X R1:%08X R2:%08X R3:%08X\n", r[0], r[1], r[2], r[3]);
+     EMU_LOG(1, "  R4:%08X R5:%08X R6:%08X R7:%08X\n", r[4], r[5], r[6], r[7]);
+     EMU_LOG(1, "  R8:%08X R9:%08X R10:%08X R11:%08X\n", r[8], r[9], r[10], r[11]);
+     EMU_LOG(1, "  R12:%08X SP:%08X LR:%08X PC:%08X\n", r[12], r[13], r[14], r[15]);
+     EMU_LOG(1, "  NVIC ENABLE:0x%08X PENDING:0x%08X\n", nvic_states[core_id].enable, nvic_states[core_id].pending);
+     EMU_LOG(1, "  MEM[PC]: %04X %04X %04X %04X %04X %04X %04X %04X\n", 
             mem_read16(last_pc), mem_read16(last_pc + 2),
             mem_read16(last_pc + 4), mem_read16(last_pc + 6),
             mem_read16(last_pc + 8), mem_read16(last_pc + 10),
@@ -1592,7 +1596,7 @@ void cpu_unbind_core_context(int core_id, const cpu_bind_context_t *ctx) {
     cores[core_id].is_halted |= (cpu.r[15] == 0xFFFFFFFF);
     
     if (cores[core_id].is_halted && !ctx->is_halted_before) {
-         printf("[CORE %d] TRANSITION TO HALT (Internal)\n", core_id);
+         EMU_LOG(1, "[CORE %d] TRANSITION TO HALT (Internal)\n", core_id);
          cpu_dump_debug_state(core_id);
     }
 
@@ -1783,7 +1787,7 @@ void cpu_reset_core(int core_id) {
              * Use top of SRAM as initial SP (boot2 sets its own). */
             c->r[13] = RAM_BASE + RAM_SIZE;
             c->r[15] = FLASH_BASE;
-            fprintf(stderr, "[Boot2] Starting boot2 from 0x%08X\n", FLASH_BASE);
+            EMU_ELOG(1, "[Boot2] Starting boot2 from 0x%08X\n", FLASH_BASE);
         } else {
             /* No boot2 detected.  Determine vector table location:
              * - If flash[0] looks like a stack pointer (in SRAM address
@@ -1898,11 +1902,11 @@ int any_core_running(void) {
 }
 
 void dual_core_status(void) {
-    fprintf(stderr, "[DUAL-CORE STATUS]\n");
+    EMU_ELOG(1, "[DUAL-CORE STATUS]\n");
     for (int i = 0; i < NUM_CORES; i++) {
-        fprintf(stderr, "[CORE%d] Status: %s\n", i, cores[i].is_halted ? "HALTED" : "RUNNING");
-        fprintf(stderr, "[CORE%d] PC=0x%08X SP=0x%08X\n", i, cores[i].r[15], cores[i].r[13]);
-        fprintf(stderr, "[CORE%d] Step count: %u\n", i, cores[i].step_count);
+        EMU_ELOG(1, "[CORE%d] Status: %s\n", i, cores[i].is_halted ? "HALTED" : "RUNNING");
+        EMU_ELOG(1, "[CORE%d] PC=0x%08X SP=0x%08X\n", i, cores[i].r[15], cores[i].r[13]);
+        EMU_ELOG(1, "[CORE%d] Step count: %u\n", i, cores[i].step_count);
     }
 }
 
@@ -1922,8 +1926,8 @@ uint32_t sio_get_core_id(void) {
 void sio_set_core1_reset(int assert_reset) {
     if (assert_reset) {
         if (!cores[CORE1].is_halted) {
-             printf("[SIO] Core 1 RESET ASSERTED by Core %d (External Halt)\n", get_active_core());
-             printf("  Executioner (Core %d) at PC:0x%08X LR:0x%08X\n", get_active_core(), cpu.r[15], cpu.r[14]);
+             EMU_LOG(1, "[SIO] Core 1 RESET ASSERTED by Core %d (External Halt)\n", get_active_core());
+             EMU_LOG(1, "  Executioner (Core %d) at PC:0x%08X LR:0x%08X\n", get_active_core(), cpu.r[15], cpu.r[14]);
              cpu_dump_debug_state(CORE1);
         }
         cores[CORE1].is_halted = 1;
@@ -1931,7 +1935,7 @@ void sio_set_core1_reset(int assert_reset) {
         core1_bootrom.launch_count = 0;
         memset(&fifo[CORE1], 0, sizeof(fifo[CORE1]));
     } else {
-        printf("[SIO] Core 1 RESET DEASSERTED by Core %d (Waiting for launch)\n", get_active_core());
+        EMU_LOG(1, "[SIO] Core 1 RESET DEASSERTED by Core %d (Waiting for launch)\n", get_active_core());
         /* On real RP2040, deasserting reset allows Core 1 to start the bootrom handshake.
          * We set waiting_for_launch=1 which will keep it effectively halted until 
          * Core 0 sends the magic words. */
@@ -1966,12 +1970,12 @@ int sio_core1_bootrom_handle_fifo_write(uint32_t val) {
     fifo_try_push(CORE0, val);
 
     if (core1_bootrom.launch_count < 6) {
-        printf("[SIO] Core 1 boot word %d: 0x%08X\n", core1_bootrom.launch_count, val);
+        EMU_LOG(1, "[SIO] Core 1 boot word %d: 0x%08X\n", core1_bootrom.launch_count, val);
         core1_bootrom.launch_words[core1_bootrom.launch_count++] = val;
     }
 
     if (core1_bootrom.launch_count == 6) {
-        printf("[SIO] Core 1 Boot Sequence Complete. VTOR:0x%08X SP:0x%08X PC:0x%08X\n", 
+        EMU_LOG(1, "[SIO] Core 1 Boot Sequence Complete. VTOR:0x%08X SP:0x%08X PC:0x%08X\n", 
                core1_bootrom.launch_words[3], core1_bootrom.launch_words[4], core1_bootrom.launch_words[5]);
         memset(cores[CORE1].r, 0, sizeof(cores[CORE1].r));
         cores[CORE1].vtor = core1_bootrom.launch_words[3];
@@ -1988,7 +1992,7 @@ int sio_core1_bootrom_handle_fifo_write(uint32_t val) {
         /* Auto-activate Core 1 so dual_core_step/corepool will step it */
         if (num_active_cores < 2) {
             num_active_cores = 2;
-            fprintf(stderr, "[CORE1] Launched by firmware — dual-core now active\n");
+            EMU_ELOG(1, "[CORE1] Launched by firmware — dual-core now active\n");
             /* If threaded mode is active, start a thread for Core 1 */
             corepool_start_core_thread(CORE1);
         }

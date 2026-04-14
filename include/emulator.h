@@ -31,6 +31,25 @@ typedef struct {
 #define DUAL_CORE_ENABLED
 
 /* ========================================================================
+ * Runtime Verbosity Control
+ *
+ * bramble_verbose: global flag gating most diagnostic printf output.
+ *   0 = silent  (recommended for web/embedded builds)
+ *   1 = normal  (boot messages, core launch, exceptions)
+ *   2 = verbose (per-step CPU trace, interrupt entry/exit)
+ *
+ * Use EMU_LOG(level, ...) to gate prints by level.
+ * Boot-time one-shot messages use EMU_LOG(1, ...).
+ * Hot-path per-step prints use EMU_LOG(2, ...).
+ * ======================================================================== */
+extern int bramble_verbose;
+
+/* Log only when bramble_verbose >= level */
+#define EMU_LOG(level, ...) do { if (bramble_verbose >= (level)) printf(__VA_ARGS__); } while (0)
+/* Same but to stderr */
+#define EMU_ELOG(level, ...) do { if (bramble_verbose >= (level)) fprintf(stderr, __VA_ARGS__); } while (0)
+
+/* ========================================================================
  * Memory Layout (RP2040)
  * ======================================================================== */
 
