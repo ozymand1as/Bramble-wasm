@@ -480,6 +480,16 @@ int picocalc_web_load_sd_image(const uint8_t *buf, int size) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+uint8_t *picocalc_web_get_sd_image_ptr(void) {
+    return virtual_sd_disk;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int picocalc_web_get_sd_image_size(void) {
+    return virtual_sd_disk ? SD_DISK_SIZE : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
 uint8_t* picocalc_web_get_display_buffer(void) {
     return display_buffer;
 }
