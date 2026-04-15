@@ -8,7 +8,11 @@ project(Bramble
 # C Standard
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -pedantic -g")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -pedantic")
+# Only add debug symbols for non-Release builds (avoids crippling binaryen WASM optimizations)
+if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g")
+endif()
 
 if(NOT APPLE AND NOT EMSCRIPTEN)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-stringop-overflow")
@@ -131,13 +135,13 @@ if(EMSCRIPTEN)
     set_target_properties(bramble_web PROPERTIES OUTPUT_NAME "bramble")
     set_target_properties(bramble_web PROPERTIES SUFFIX ".js")
     target_link_options(bramble_web PRIVATE 
-        "-sEXPORTED_FUNCTIONS=_picocalc_web_init,_picocalc_web_load_uf2,_picocalc_web_load_sd_image,_picocalc_web_start,_picocalc_web_get_display_buffer,_picocalc_web_set_key,_picocalc_web_get_spi_count,_picocalc_web_get_pixel_count,_picocalc_web_get_uart_count,_picocalc_web_get_sh_count,_picocalc_web_get_uart_enabled,_picocalc_web_get_last_sd_cmd,_picocalc_web_get_last_sd_sector,_picocalc_web_get_last_sd_miso,_picocalc_web_get_sio_launch_count,_picocalc_web_get_nvic_pending,_picocalc_web_get_nvic_enabled,_picocalc_web_get_pc0,_picocalc_web_get_pc1,_picocalc_web_get_sp0,_picocalc_web_get_sp1,_picocalc_web_get_core_flags,_picocalc_web_get_irq,_picocalc_web_get_fault_frame,_picocalc_web_get_pc_trace,_picocalc_web_get_regs,_picocalc_web_dump_mem,_picocalc_web_read_mem16,_picocalc_web_get_uart_log,_picocalc_web_get_total_steps,_picocalc_web_get_i2c_write_count,_picocalc_web_get_i2c_write_log,_picocalc_web_set_verbose,_picocalc_web_get_verbose,_malloc,_free"
+        "-sEXPORTED_FUNCTIONS=_picocalc_web_init,_picocalc_web_load_uf2,_picocalc_web_load_sd_image,_picocalc_web_get_sd_image_ptr,_picocalc_web_get_sd_image_size,_picocalc_web_start,_picocalc_web_get_display_buffer,_picocalc_web_set_key,_picocalc_web_get_spi_count,_picocalc_web_get_pixel_count,_picocalc_web_get_uart_count,_picocalc_web_get_sh_count,_picocalc_web_get_uart_enabled,_picocalc_web_get_last_sd_cmd,_picocalc_web_get_last_sd_sector,_picocalc_web_get_last_sd_miso,_picocalc_web_get_sio_launch_count,_picocalc_web_get_nvic_pending,_picocalc_web_get_nvic_enabled,_picocalc_web_get_pc0,_picocalc_web_get_pc1,_picocalc_web_get_sp0,_picocalc_web_get_sp1,_picocalc_web_get_core_flags,_picocalc_web_get_irq,_picocalc_web_get_fault_frame,_picocalc_web_get_pc_trace,_picocalc_web_get_regs,_picocalc_web_dump_mem,_picocalc_web_read_mem16,_picocalc_web_get_uart_log,_picocalc_web_get_total_steps,_picocalc_web_get_i2c_write_count,_picocalc_web_get_i2c_write_log,_picocalc_web_set_verbose,_picocalc_web_get_verbose,_malloc,_free"
         "-sEXPORTED_RUNTIME_METHODS=ccall,cwrap,addFunction,removeFunction,writeArrayToMemory,HEAPU8,getValue,setValue,UTF8ToString"
         "-sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=malloc,free"
-        "-sASYNCIFY"
         "-sALLOW_MEMORY_GROWTH=1"
         "-sMODULARIZE=1"
         "-sEXPORT_NAME=createBramble"
         "-sERROR_ON_UNDEFINED_SYMBOLS=0"
+        "-O3"
     )
 endif()

@@ -672,6 +672,13 @@ void picocalc_emscripten_loop(void) {
     // Time-budgeted loop: run as many steps as possible within 12ms per frame.
     // This saturates the CPU on fast machines while never blocking the browser UI.
     // The time check is amortized every 2000 steps to keep overhead negligible.
+    //
+    // Peripheral stepping frequencies:
+    //   pio_step  — every 8 CPU steps  (~15 MHz equivalent at 125 MHz CPU)
+    //   usb_step  — every 32 CPU steps (~3.9 MHz; USB runs at 48 MHz but
+    //               enumeration/CDC are slow enough that coarser stepping is fine)
+    static uint32_t pio_counter = 0;
+    static uint32_t usb_counter = 0;
     const double deadline = emscripten_get_now() + 12.0;
     for (;;) {
         for (int i = 0; i < 2000; i++) {
@@ -686,8 +693,8 @@ void picocalc_emscripten_loop(void) {
             }
             dual_core_step();
             total_steps_count++;
-            pio_step();
-            usb_step();
+            if (++pio_counter >= 8)  { pio_counter = 0; pio_step(); }
+            if (++usb_counter >= 32) { usb_counter = 0; usb_step(); }
         }
         if (emscripten_get_now() >= deadline) break;
     }
